@@ -9,7 +9,8 @@ import java.util.Random;
 final class TextureGenerator {
     private static final int TILE = 16;
     private static final int[] BASE = {
-            0x6aaa40, 0x966c4a, 0x7f7f7f, 0x675231, 0xb53a15, 0x35b84a, 0xe63224
+            0x6aaa40, 0x6aaa40, 0x966c4a, 0x7f7f7f,
+            0x675231, 0xb53a15, 0x35b84a, 0xe63224
     };
 
     private TextureGenerator() { }
@@ -65,20 +66,23 @@ final class TextureGenerator {
             int grassLine = 10 + (x * x * 3 + x * 81 >>> 2 & 3);
             if (y < grassLine) return shade(0x6aaa40, brightness);
             brightness = brightness * 2 / 3;
-        } else if (layer == 1 && ((x + y * 3) & 7) == 0) {
+        } else if (layer == 1) {
+            brightness = brightness * 2 / 3;
+            if (((x * 3 + y * 7) & 15) == 0) brightness = Math.min(255, brightness + 22);
+        } else if (layer == 2 && ((x + y * 3) & 7) == 0) {
             brightness = Math.min(255, brightness + 28);
-        } else if (layer == 3) {
+        } else if (layer == 4) {
             if (x > 0 && x < 15 && y > 0 && y < 15) {
                 brightness = 164 + random.nextInt(36) + Math.max(Math.abs(x - 7), Math.abs(y - 7)) % 3 * 24;
                 if ((x + y) % 5 == 0) return shade(0xbc9862, brightness);
             } else if (random.nextBoolean()) {
                 brightness = brightness * (150 - (x & 1) * 60) / 100;
             }
-        } else if (layer == 4 && (x % 4 == 0 || y % 4 == 0)) {
+        } else if (layer == 5 && (x % 4 == 0 || y % 4 == 0)) {
             return shade(0xbcafa5, brightness);
-        } else if (layer == 5) {
-            brightness = 210 + random.nextInt(46);
         } else if (layer == 6) {
+            brightness = 210 + random.nextInt(46);
+        } else if (layer == 7) {
             brightness = 210 + random.nextInt(46);
         }
         return shade(BASE[layer], brightness);

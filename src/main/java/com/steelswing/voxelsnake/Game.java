@@ -6,7 +6,9 @@ import org.lwjgl.opengl.GL;
 
 import java.nio.FloatBuffer;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Random;
 
 import static org.lwjgl.glfw.GLFW.*;
@@ -19,6 +21,7 @@ final class Game {
     private long window;
     private int program;
     private int texture;
+    private int entityVbo;
     private final World world = new World(0x5EEDL);
     private final List<int[]> snake = new ArrayList<>();
     private final Random random = new Random(0xA11CE);
@@ -45,12 +48,20 @@ final class Game {
     private double lastMouseY;
     private boolean firstMouse = true;
     private int selectedBlock = 2;
+    private final Map<Long, ChunkMesh> meshes = new HashMap<>();
+    private long meshVersion = -1;
 
     void run() {
         init();
-        loop();
-        glfwDestroyWindow(window);
-        glfwTerminate();
+        try {
+            loop();
+        } finally {
+            for (ChunkMesh mesh : meshes.values()) glDeleteBuffers(mesh.vbo);
+            meshes.clear();
+            world.close();
+            if (window != NULL) glfwDestroyWindow(window);
+            glfwTerminate();
+        }
     }
 
     private void init() {
@@ -68,6 +79,7 @@ final class Game {
         glCullFace(GL_BACK);
         program = createProgram();
         texture = createTexture();
+        entityVbo = glGenBuffers();
         addSnake(16, 16);
         addSnake(15, 16);
         addSnake(14, 16);
@@ -267,17 +279,12 @@ final class Game {
             ty = followTargetY;
             tz = followTargetZ;
         }
-        FloatBuffer data = BufferUtils.createFloatBuffer((World.SIZE * World.HEIGHT * World.SIZE + snake.size() + 1) * 36 * 6);
-        for (int x = 0; x < World.SIZE; x++) for (int y = 0; y < World.HEIGHT; y++) for (int z = 0; z < World.SIZE; z++) {
-            int type = world.get(x, y, z);
-            if (type != 0) visibleCube(data, x, y, z, type);
+        if (meshVersion != world.version()) {
+            for (ChunkMesh mesh : meshes.values()) glDeleteBuffers(mesh.vbo);
+            meshes.clear();
+            glDeleteBuffers(entityVbo);
+            meshVersion = world.version();
         }
-        for (int[] part : snake) cube(data, part[0], part[1], part[2], 6);
-        cube(data, apple[0], apple[1], apple[2], 5);
-        data.flip();
-        int vbo = glGenBuffers();
-        glBindBuffer(GL_ARRAY_BUFFER, vbo);
-        glBufferData(GL_ARRAY_BUFFER, data, GL_STREAM_DRAW);
         glUseProgram(program);
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, texture);
@@ -290,8 +297,64 @@ final class Game {
         glEnableVertexAttribArray(light); glVertexAttribPointer(light, 1, GL_FLOAT, false, 24, 20);
         glUniformMatrix4fv(glGetUniformLocation(program, "matrix"), false,
                 matrix(ex, ey, ez, tx, ty, tz, size[0] / (float) height[0]));
-        glDrawArrays(GL_TRIANGLES, 0, data.limit() / 6);
-        glDeleteBuffers(vbo);
+        int centerX = editMode ? (int) cameraX : head[0];
+        int centerZ = editMode ? (int) cameraZ : head[2];
+        int centerChunkX = Math.floorDiv(centerX, World.CHUNK_SIZE);
+        int centerChunkZ = Math.floorDiv(centerZ, World.CHUNK_SIZE);
+        int chunkRadius = 2;
+        for (int chunkX = centerChunkX - chunkRadius; chunkX <= centerChunkX + chunkRadius; chunkX++) {
+            for (int chunkZ = centerChunkZ - chunkRadius; chunkZ <= centerChunkZ + chunkRadius; chunkZ++) {
+                ChunkMesh mesh = chunkMesh(chunkX, chunkZ);
+                glBindBuffer(GL_ARRAY_BUFFER, mesh.vbo);
+                glVertexAttribPointer(position, 3, GL_FLOAT, false, 24, 0);
+                glVertexAttribPointer(texCoord, 2, GL_FLOAT, false, 24, 12);
+                glVertexAttribPointer(light, 1, GL_FLOAT, false, 24, 20);
+                glDrawArrays(GL_TRIANGLES, 0, mesh.vertices);
+            }
+        }
+        FloatBuffer entities = BufferUtils.createFloatBuffer((snake.size() + 1) * 216);
+        for (int[] part : snake) cube(entities, part[0], part[1], part[2], 6);
+        cube(entities, apple[0], apple[1], apple[2], 7);
+        entities.flip();
+        glBindBuffer(GL_ARRAY_BUFFER, entityVbo);
+        glBufferData(GL_ARRAY_BUFFER, entities, GL_STREAM_DRAW);
+        glDrawArrays(GL_TRIANGLES, 0, entities.limit() / 6);
+    }
+
+    private ChunkMesh chunkMesh(int chunkX, int chunkZ) {
+        int wrappedX = Math.floorMod(chunkX, World.CHUNK_COUNT);
+        int wrappedZ = Math.floorMod(chunkZ, World.CHUNK_COUNT);
+        long key = ((long) chunkX << 32) ^ (chunkZ & 0xffffffffL);
+        ChunkMesh cached = meshes.get(key);
+        if (cached != null) return cached;
+        FloatBuffer data = BufferUtils.createFloatBuffer(1_500_000);
+        int startX = chunkX * World.CHUNK_SIZE;
+        int startZ = chunkZ * World.CHUNK_SIZE;
+        for (int x = startX; x < startX + World.CHUNK_SIZE; x++) {
+            for (int y = 0; y < World.CHUNK_SIZE; y++) {
+                for (int z = startZ; z < startZ + World.CHUNK_SIZE; z++) {
+                    int type = world.get(x, y, z);
+                    if (type != 0) visibleCube(data, x, y, z, type);
+                }
+            }
+        }
+        data.flip();
+        int vbo = glGenBuffers();
+        glBindBuffer(GL_ARRAY_BUFFER, vbo);
+        glBufferData(GL_ARRAY_BUFFER, data, GL_STATIC_DRAW);
+        ChunkMesh mesh = new ChunkMesh(vbo, data.limit() / 6);
+        meshes.put(key, mesh);
+        return mesh;
+    }
+
+    private static final class ChunkMesh {
+        private final int vbo;
+        private final int vertices;
+
+        private ChunkMesh(int vbo, int vertices) {
+            this.vbo = vbo;
+            this.vertices = vertices;
+        }
     }
 
     private void cube(FloatBuffer b, int x, int y, int z, int type) {
@@ -312,13 +375,24 @@ final class Game {
     private void texturedFace(FloatBuffer b, int x, int y, int z, int type, int face, float faceLight) {
         int[][] f={{3,7,6,6,2,3},{0,1,5,5,4,0},{0,4,7,7,3,0},{1,2,6,6,5,1},{4,5,6,6,7,4},{0,3,2,2,1,0}};
         float[][] p={{0,0,0},{1,0,0},{1,1,0},{0,1,0},{0,0,1},{1,0,1},{1,1,1},{0,1,1}};
-        int tile = Math.floorMod(type - 1, 7);
+        int tile = tileFor(type, face);
         for (int i : f[face]) {
             float u = (tile * 16f + textureU(p[i], face) * 15f + .5f) / TextureGenerator.width();
             float v = (textureV(p[i], face) * 15f + .5f) / 16f;
             float ao = ambientOcclusion(x, y, z, face, p[i]);
             b.put(x+p[i][0]).put(y+p[i][1]).put(z+p[i][2]).put(u).put(v).put(faceLight * ao);
         }
+
+    }
+
+    private static int tileFor(int type, int face) {
+        if (type == 1) return face == 0 ? 0 : face == 1 ? 2 : 1;
+        if (type == 2) return 2;
+        if (type == 3) return 3;
+        if (type == 4) return 4;
+        if (type == 5) return 5;
+        if (type == 6) return 6;
+        return 7;
     }
 
     private float ambientOcclusion(int x, int y, int z, int face, float[] point) {
