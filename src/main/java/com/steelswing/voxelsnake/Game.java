@@ -463,6 +463,7 @@ final class Game {
                 ChunkBuild build = pending.get();
                 if (build.revision != world.chunkRevision(chunkX, chunkZ)) {
                     build.mesh.free();
+                    world.markChunkDirty(chunkX, chunkZ);
                     return cached;
                 }
                 int vbo = glGenBuffers();
@@ -490,14 +491,15 @@ final class Game {
         }
         if (cached != null && !invalidatedMeshes.contains(key)) return cached;
         if (pending == null) {
-            pending = meshExecutor.submit(() -> buildChunk(chunkX, chunkZ));
+            long revision = world.chunkRevision(chunkX, chunkZ);
+            pending = meshExecutor.submit(() -> buildChunk(chunkX, chunkZ, revision));
             pendingMeshes.put(key, pending);
             return cached;
         }
         return cached;
     }
 
-    private ChunkBuild buildChunk(int chunkX, int chunkZ) {
+    private ChunkBuild buildChunk(int chunkX, int chunkZ, long revision) {
         NativeMesh data = new NativeMesh(262144);
         try {
             int startX = chunkX * World.CHUNK_SIZE;
@@ -506,7 +508,7 @@ final class Game {
                 throw new CancellationException("Chunk build interrupted");
             }
             MarchingCubesMesher.build(world, data, startX, startZ);
-            return new ChunkBuild(world.chunkRevision(chunkX, chunkZ), data);
+            return new ChunkBuild(revision, data);
         } catch (CancellationException e) {
             data.free();
             throw e;

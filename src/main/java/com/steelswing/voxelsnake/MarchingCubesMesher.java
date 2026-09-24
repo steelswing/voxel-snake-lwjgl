@@ -348,16 +348,18 @@ final class MarchingCubesMesher {
             float textureV;
             int section;
             if (absY >= absX && absY >= absZ) {
-                textureU = fract(vertex[0]);
-                textureV = fract(vertex[2]);
+                textureU = vertex[0] - (float) Math.floor(vertex[0]);
+                textureV = vertex[2] - (float) Math.floor(vertex[2]);
                 section = gy >= 0 ? 0 : 2;
             } else if (absX >= absZ) {
-                textureU = fract(vertex[2]);
-                textureV = fract(vertex[1]);
+                textureU = vertex[2] - (float) Math.floor(vertex[2]);
+                textureV = vertex[1] - (float) Math.floor(vertex[1]);
+                if (gx < 0) textureU = 1f - textureU;
                 section = 1;
             } else {
-                textureU = fract(vertex[0]);
-                textureV = fract(vertex[1]);
+                textureU = vertex[0] - (float) Math.floor(vertex[0]);
+                textureV = vertex[1] - (float) Math.floor(vertex[1]);
+                if (gz < 0) textureU = 1f - textureU;
                 section = 1;
             }
             int tile = Math.max(0, Math.min(7, material - 1));
@@ -365,10 +367,6 @@ final class MarchingCubesMesher {
             float v = atlasCoordinate((2 - section) * 16, textureV, TextureGenerator.height());
             mesh.put(vertex[0], vertex[1], vertex[2], gx, gy, gz, u, v, 1f);
         }
-    }
-
-    private static float fract(float value) {
-        return value - (float) Math.floor(value);
     }
 
     private static float atlasCoordinate(int tileOrigin, float local, int atlasSize) {

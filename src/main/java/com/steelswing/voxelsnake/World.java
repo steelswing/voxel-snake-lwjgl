@@ -134,6 +134,12 @@ final class World {
         return chunkRevisions.getOrDefault(renderChunkKey(chunkX, chunkZ), 0L);
     }
 
+    synchronized void markChunkDirty(int chunkX, int chunkZ) {
+        long key = renderChunkKey(chunkX, chunkZ);
+        dirtyChunks.add(key);
+        chunkRevisions.put(key, chunkRevisions.getOrDefault(key, 0L) + 1L);
+    }
+
     private void markDirty(int x, int y, int z) {
         int chunkX = Math.floorDiv(x, CHUNK_SIZE);
         int chunkY = Math.floorDiv(y, CHUNK_SIZE);
