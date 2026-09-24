@@ -163,7 +163,7 @@ final class Game {
                 if (key == GLFW_KEY_D) turn(1, 0);
             } else if (key == GLFW_KEY_Q || key == GLFW_KEY_E) {
                 editBlock(key == GLFW_KEY_E);
-            } else if (key >= GLFW_KEY_1 && key <= GLFW_KEY_6) {
+            } else if (key >= GLFW_KEY_1 && key <= GLFW_KEY_5) {
                 selectedBlock = key - GLFW_KEY_0;
             }
         });
@@ -434,8 +434,8 @@ final class Game {
         }
         NativeMesh entities = new NativeMesh((snake.size() + 1) * 216);
         try {
-            for (int[] part : snake) cube(entities, part[0], part[1], part[2], 9);
-            cube(entities, apple[0], apple[1], apple[2], 10);
+            for (int[] part : snake) cube(entities, part[0], part[1], part[2], 6);
+            cube(entities, apple[0], apple[1], apple[2], 7);
             glBindBuffer(GL_ARRAY_BUFFER, entityVbo);
             glVertexAttribPointer(position, 3, GL_FLOAT, false, 24, 0);
             glVertexAttribPointer(texCoord, 2, GL_FLOAT, false, 24, 12);
@@ -499,7 +499,7 @@ final class Game {
             int startX = chunkX * World.CHUNK_SIZE;
             int startZ = chunkZ * World.CHUNK_SIZE;
             for (int x = startX; x < startX + World.CHUNK_SIZE; x++) {
-                for (int y = 0; y < World.HEIGHT; y++) {
+                for (int y = 0; y < World.CHUNK_SIZE; y++) {
                     for (int z = startZ; z < startZ + World.CHUNK_SIZE; z++) {
                         if (Thread.currentThread().isInterrupted()) {
                             throw new CancellationException("Chunk build interrupted");
@@ -547,16 +547,12 @@ final class Game {
     }
 
     private void visibleCube(NativeMesh b, int x, int y, int z, int type) {
-        if (!opaque(world.get(x, y + 1, z))) texturedFace(b, x, y, z, type, 0, .98f);
-        if (!opaque(world.get(x, y - 1, z))) texturedFace(b, x, y, z, type, 1, .56f);
-        if (!opaque(world.get(x - 1, y, z))) texturedFace(b, x, y, z, type, 2, .72f);
-        if (!opaque(world.get(x + 1, y, z))) texturedFace(b, x, y, z, type, 3, .84f);
-        if (!opaque(world.get(x, y, z + 1))) texturedFace(b, x, y, z, type, 4, .78f);
-        if (!opaque(world.get(x, y, z - 1))) texturedFace(b, x, y, z, type, 5, .68f);
-    }
-
-    private static boolean opaque(byte type) {
-        return type != 0 && type != 5;
+        if (world.get(x, y + 1, z) == 0) texturedFace(b, x, y, z, type, 0, .98f);
+        if (world.get(x, y - 1, z) == 0) texturedFace(b, x, y, z, type, 1, .56f);
+        if (world.get(x - 1, y, z) == 0) texturedFace(b, x, y, z, type, 2, .72f);
+        if (world.get(x + 1, y, z) == 0) texturedFace(b, x, y, z, type, 3, .84f);
+        if (world.get(x, y, z + 1) == 0) texturedFace(b, x, y, z, type, 4, .78f);
+        if (world.get(x, y, z - 1) == 0) texturedFace(b, x, y, z, type, 5, .68f);
     }
 
     private void texturedFace(NativeMesh b, int x, int y, int z, int type, int face, float faceLight) {
@@ -568,17 +564,12 @@ final class Game {
             float u = (tile * 16f + textureU(p[i], face) * 15f + .5f) / TextureGenerator.width();
             float v = ((2 - section) * 16f + textureV(p[i], face) * 15f + .5f) / TextureGenerator.height();
             float ao = ambientOcclusion(x, y, z, face, p[i]);
-            float light = type >= 9 ? 1f : type == 6 ? 1f
-                    : world.light(x + (int) p[i][0], y + (int) p[i][1], z + (int) p[i][2]);
-            b.put(x+p[i][0], y+p[i][1], z+p[i][2], u, v, faceLight * ao * light);
+            b.put(x+p[i][0], y+p[i][1], z+p[i][2], u, v, faceLight * ao);
         }
 
     }
 
     private static int tileFor(int type, int face) {
-        if (type == 6) return 8;
-        if (type == 9) return 6;
-        if (type == 10) return 7;
         return Math.max(0, Math.min(7, type - 1));
     }
 
@@ -644,7 +635,7 @@ final class Game {
 
     private static int createProgram() {
         int vs=shader(GL_VERTEX_SHADER,"#version 120\nattribute vec3 position; attribute vec2 texCoord; attribute float light; varying vec2 vTexCoord; varying float vLight; varying float vDistance; uniform mat4 matrix; uniform vec3 fogOrigin; void main(){gl_Position=matrix*vec4(position,1.0);vTexCoord=texCoord;vLight=light;vDistance=distance(position,fogOrigin);}");
-        int fs=shader(GL_FRAGMENT_SHADER,"#version 120\nuniform sampler2D atlas; uniform float useTexture; uniform vec4 tint; uniform float fogStart; uniform float fogEnd; varying vec2 vTexCoord; varying float vLight; varying float vDistance; void main(){vec4 color=useTexture > 0.5 ? texture2D(atlas,vTexCoord)*vLight : tint; if(color.a < 0.5) discard; float fog=clamp((vDistance-fogStart)/(fogEnd-fogStart),0.0,1.0); color.rgb=mix(color.rgb,vec3(0.56,0.72,0.88),fog); gl_FragColor=color;}");
+        int fs=shader(GL_FRAGMENT_SHADER,"#version 120\nuniform sampler2D atlas; uniform float useTexture; uniform vec4 tint; uniform float fogStart; uniform float fogEnd; varying vec2 vTexCoord; varying float vLight; varying float vDistance; void main(){vec4 color=useTexture > 0.5 ? texture2D(atlas,vTexCoord)*vLight : tint; float fog=clamp((vDistance-fogStart)/(fogEnd-fogStart),0.0,1.0); color.rgb=mix(color.rgb,vec3(0.56,0.72,0.88),fog); gl_FragColor=color;}");
         int p=glCreateProgram();glAttachShader(p,vs);glAttachShader(p,fs);glLinkProgram(p);
         if (glGetProgrami(p, GL_LINK_STATUS) == GL_FALSE) {
             String info = glGetProgramInfoLog(p);
