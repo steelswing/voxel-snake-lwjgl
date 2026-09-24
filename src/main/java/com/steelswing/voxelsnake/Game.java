@@ -7,6 +7,7 @@ import org.lwjgl.opengl.GL;
 import java.nio.FloatBuffer;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Random;
 
 import static org.lwjgl.glfw.GLFW.*;
 import static org.lwjgl.opengl.GL11C.*;
@@ -18,11 +19,14 @@ final class Game {
     private int program;
     private final World world = new World(0x5EEDL);
     private final List<int[]> snake = new ArrayList<>();
+    private final Random random = new Random(0xA11CE);
+    private int[] apple;
     private boolean editMode;
     private int dx = 1;
     private int dz;
     private double nextStep;
     private double cameraAngle;
+    private int snakeLength = 5;
 
     void run() {
         init();
@@ -46,6 +50,7 @@ final class Game {
         addSnake(16, 16);
         addSnake(15, 16);
         addSnake(14, 16);
+        spawnApple();
         glfwSetKeyCallback(window, (w, key, scan, action, mods) -> {
             if (action != GLFW_PRESS) return;
             if (key == GLFW_KEY_ESCAPE) glfwSetWindowShouldClose(window, true);
@@ -64,8 +69,9 @@ final class Game {
         int[] head = snake.get(0);
         int x = Math.floorMod(head[0] + dx, World.SIZE);
         int z = Math.floorMod(head[2] + dz, World.SIZE);
-        int y = world.surface(x, z) + (add ? 1 : 0);
-        world.set(x, y, z, (byte) (add ? 2 : 0));
+        int y = add ? world.surface(x, z) + 1 : world.surface(x, z);
+        if (add && y < World.HEIGHT) world.set(x, y, z, (byte) 2);
+        if (!add && y > 0) world.set(x, y, z, (byte) 0);
     }
 
     private void loop() {
@@ -82,8 +88,33 @@ final class Game {
         int[] head = snake.get(0);
         int x = Math.floorMod(head[0] + dx, World.SIZE);
         int z = Math.floorMod(head[2] + dz, World.SIZE);
-        snake.add(0, new int[]{x, world.surface(x, z) + 1, z});
-        while (snake.size() > 9) snake.remove(snake.size() - 1);
+        int y = world.surface(x, z) + 1;
+        snake.add(0, new int[]{x, y, z});
+        if (apple[0] == x && apple[1] == y && apple[2] == z) {
+            snakeLength++;
+            spawnApple();
+        }
+        while (snake.size() > snakeLength) snake.remove(snake.size() - 1);
+    }
+
+    private void spawnApple() {
+        for (int attempt = 0; attempt < 256; attempt++) {
+            int x = random.nextInt(World.SIZE);
+            int z = random.nextInt(World.SIZE);
+            int y = world.surface(x, z) + 1;
+            boolean occupied = false;
+            for (int[] part : snake) {
+                if (part[0] == x && part[1] == y && part[2] == z) {
+                    occupied = true;
+                    break;
+                }
+            }
+            if (!occupied) {
+                apple = new int[]{x, y, z};
+                return;
+            }
+        }
+        apple = new int[]{0, world.surface(0, 0) + 1, 0};
     }
 
     private void render() {
@@ -104,6 +135,7 @@ final class Game {
             if (type != 0) cube(data, x, y, z, type);
         }
         for (int[] part : snake) cube(data, part[0], part[1], part[2], 6);
+        cube(data, apple[0], apple[1], apple[2], 5);
         data.flip();
         int vbo = glGenBuffers();
         glBindBuffer(GL_ARRAY_BUFFER, vbo);
@@ -130,8 +162,13 @@ final class Game {
 
     private static float[] matrix(float ex,float ey,float ez,float tx,float ty,float tz,float aspect) {
         float[] f=normalize(tx-ex,ty-ey,tz-ez),up={0,1,0},s=normalize(cross(f,up)),u=cross(s,f),m=new float[16];
-        float scale=1f/(float)Math.tan(Math.toRadians(55)/2);
-        m[0]=scale/aspect*s[0];m[4]=scale/aspect*s[1];m[8]=scale/aspect*s[2];m[1]=scale*u[0];m[5]=scale*u[1];m[9]=scale*u[2];m[2]=-f[0];m[6]=-f[1];m[10]=-f[2];m[12]=-dot(s,ex,ey,ez);m[13]=-dot(u,ex,ey,ez);m[14]=dot(f,ex,ey,ez);m[15]=1;return m;
+        float scale=1f/(float)Math.tan(Math.toRadians(60)/2);
+        float near=0.1f, far=256f, a=(far+near)/(near-far), b=2f*far*near/(near-far);
+        m[0]=scale/aspect*s[0];m[4]=scale/aspect*s[1];m[8]=scale/aspect*s[2];
+        m[1]=scale*u[0];m[5]=scale*u[1];m[9]=scale*u[2];
+        m[2]=a*-f[0];m[6]=a*-f[1];m[10]=a*-f[2];m[14]=a*dot(f,ex,ey,ez)+b;
+        m[3]=f[0];m[7]=f[1];m[11]=f[2];m[15]=-dot(f,ex,ey,ez);
+        return m;
     }
     private static float[] normalize(float x,float y,float z){float l=(float)Math.sqrt(x*x+y*y+z*z);return new float[]{x/l,y/l,z/l};}
     private static float[] normalize(float[] v){return normalize(v[0],v[1],v[2]);}
