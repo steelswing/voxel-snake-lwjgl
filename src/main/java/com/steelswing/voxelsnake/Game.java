@@ -34,6 +34,13 @@ final class Game {
     private float cameraZ;
     private float cameraYaw;
     private float cameraPitch;
+    private float followX;
+    private float followY;
+    private float followZ;
+    private float followTargetX;
+    private float followTargetY;
+    private float followTargetZ;
+    private double lastFrameTime;
     private double lastMouseX;
     private double lastMouseY;
     private boolean firstMouse = true;
@@ -70,6 +77,13 @@ final class Game {
         cameraY = head[1] + 2.5f;
         cameraZ = head[2] + .5f;
         cameraYaw = (float) Math.atan2(dz, dx);
+        followX = head[0] + .5f - dx * 10f;
+        followY = head[1] + 8f;
+        followZ = head[2] + .5f - dz * 10f;
+        followTargetX = head[0] + .5f;
+        followTargetY = head[1] + .25f;
+        followTargetZ = head[2] + .5f;
+        lastFrameTime = glfwGetTime();
         glfwSetKeyCallback(window, (w, key, scan, action, mods) -> {
             if (key >= 0 && key < keys.length) keys[key] = action != GLFW_RELEASE;
             if (action != GLFW_PRESS) return;
@@ -130,9 +144,11 @@ final class Game {
     private void loop() {
         while (!glfwWindowShouldClose(window)) {
             double now = glfwGetTime();
+            float frameTime = (float) Math.min(.1, Math.max(0, now - lastFrameTime));
+            lastFrameTime = now;
             if (!editMode && now >= nextStep) { moveSnake(); nextStep = now + .22; }
-            if (editMode) updateFreeCamera(1f / 60f);
-            render();
+            if (editMode) updateFreeCamera(frameTime);
+            render(frameTime);
             glfwSwapBuffers(window);
             glfwPollEvents();
         }
@@ -209,7 +225,7 @@ final class Game {
         apple = new int[]{0, world.surface(0, 0) + 1, 0};
     }
 
-    private void render() {
+    private void render(float frameTime) {
         int[] size = new int[2];
         int[] height = new int[1];
         glfwGetFramebufferSize(window, size, height);
@@ -231,12 +247,25 @@ final class Game {
             ty = ey + (float) Math.sin(cameraPitch);
             tz = ez + (float) (Math.cos(cameraPitch) * Math.sin(cameraYaw));
         } else {
-            ex = head[0] + .5f - dx * 10f;
-            ey = head[1] + 8f;
-            ez = head[2] + .5f - dz * 10f;
-            tx = head[0] + .5f;
-            ty = head[1] + .25f;
-            tz = head[2] + .5f;
+            float desiredX = head[0] + .5f - dx * 10f;
+            float desiredY = head[1] + 8f;
+            float desiredZ = head[2] + .5f - dz * 10f;
+            float desiredTargetX = head[0] + .5f;
+            float desiredTargetY = head[1] + .25f;
+            float desiredTargetZ = head[2] + .5f;
+            float smoothing = 1f - (float) Math.exp(-frameTime * 12f);
+            followX += (desiredX - followX) * smoothing;
+            followY += (desiredY - followY) * smoothing;
+            followZ += (desiredZ - followZ) * smoothing;
+            followTargetX += (desiredTargetX - followTargetX) * smoothing;
+            followTargetY += (desiredTargetY - followTargetY) * smoothing;
+            followTargetZ += (desiredTargetZ - followTargetZ) * smoothing;
+            ex = followX;
+            ey = followY;
+            ez = followZ;
+            tx = followTargetX;
+            ty = followTargetY;
+            tz = followTargetZ;
         }
         FloatBuffer data = BufferUtils.createFloatBuffer((World.SIZE * World.HEIGHT * World.SIZE + snake.size() + 1) * 36 * 6);
         for (int x = 0; x < World.SIZE; x++) for (int y = 0; y < World.HEIGHT; y++) for (int z = 0; z < World.SIZE; z++) {
@@ -281,11 +310,11 @@ final class Game {
     }
 
     private void texturedFace(FloatBuffer b, int x, int y, int z, int type, int face, float faceLight) {
-        int[][] f={{3,2,6,6,7,3},{4,5,1,1,0,4},{4,0,3,3,7,4},{1,5,6,6,2,1},{5,4,7,7,6,5},{0,1,2,2,3,0}};
+        int[][] f={{3,7,6,6,2,3},{0,1,5,5,4,0},{0,4,7,7,3,0},{1,2,6,6,5,1},{4,5,6,6,7,4},{0,3,2,2,1,0}};
         float[][] p={{0,0,0},{1,0,0},{1,1,0},{0,1,0},{0,0,1},{1,0,1},{1,1,1},{0,1,1}};
-        int tile = Math.floorMod(type - 1, 5);
+        int tile = Math.floorMod(type - 1, 7);
         for (int i : f[face]) {
-            float u = (tile * 16f + textureU(p[i], face) * 15f + .5f) / 80f;
+            float u = (tile * 16f + textureU(p[i], face) * 15f + .5f) / TextureGenerator.width();
             float v = (textureV(p[i], face) * 15f + .5f) / 16f;
             float ao = ambientOcclusion(x, y, z, face, p[i]);
             b.put(x+p[i][0]).put(y+p[i][1]).put(z+p[i][2]).put(u).put(v).put(faceLight * ao);
@@ -293,17 +322,40 @@ final class Game {
     }
 
     private float ambientOcclusion(int x, int y, int z, int face, float[] point) {
-        int axisA = face == 0 || face == 1 ? (point[0] == 0 ? -1 : 1) : (face == 2 || face == 3 ? (point[1] == 0 ? -1 : 1) : (point[0] == 0 ? -1 : 1));
-        int axisB = face == 0 || face == 1 ? (point[2] == 0 ? -1 : 1) : (point[2] == 0 ? -1 : 1);
-        int nx = face == 2 ? -1 : face == 3 ? 1 : 0;
-        int ny = face == 1 ? -1 : face == 0 ? 1 : 0;
-        int nz = face == 5 ? -1 : face == 4 ? 1 : 0;
-        int ax = face == 2 || face == 3 ? 0 : axisA;
-        int ay = face == 0 || face == 1 ? 0 : (face == 2 || face == 3 ? axisA : axisA);
-        int az = face == 0 || face == 1 ? axisB : (face == 2 || face == 3 ? axisB : 0);
-        boolean sideA = world.get(x + nx + ax, y + ny + ay, z + nz + az) != 0;
-        boolean sideB = world.get(x + nx + (face == 0 || face == 1 ? 0 : axisB), y + ny + (face == 0 || face == 1 ? 0 : (face == 2 || face == 3 ? 0 : axisB)), z + nz + (face == 0 || face == 1 ? axisA : 0)) != 0;
-        return sideA && sideB ? .58f : 1f - (sideA || sideB ? .12f : 0f);
+        int[] normal = {0, 0, 0};
+        int[] tangent = {0, 0, 0};
+        int[] bitangent = {0, 0, 0};
+        switch (face) {
+            case 0 -> { normal[1] = 1; tangent[0] = 1; bitangent[2] = 1; }
+            case 1 -> { normal[1] = -1; tangent[0] = 1; bitangent[2] = 1; }
+            case 2 -> { normal[0] = -1; tangent[2] = 1; bitangent[1] = 1; }
+            case 3 -> { normal[0] = 1; tangent[2] = 1; bitangent[1] = 1; }
+            case 4 -> { normal[2] = 1; tangent[0] = 1; bitangent[1] = 1; }
+            case 5 -> { normal[2] = -1; tangent[0] = 1; bitangent[1] = 1; }
+            default -> throw new IllegalArgumentException("Unknown face: " + face);
+        }
+        int tangentSign = coordinateSign(point, tangent);
+        int bitangentSign = coordinateSign(point, bitangent);
+        int sideAX = x + normal[0] + tangent[0] * tangentSign;
+        int sideAY = y + normal[1] + tangent[1] * tangentSign;
+        int sideAZ = z + normal[2] + tangent[2] * tangentSign;
+        int sideBX = x + normal[0] + bitangent[0] * bitangentSign;
+        int sideBY = y + normal[1] + bitangent[1] * bitangentSign;
+        int sideBZ = z + normal[2] + bitangent[2] * bitangentSign;
+        int cornerX = sideAX + bitangent[0] * bitangentSign;
+        int cornerY = sideAY + bitangent[1] * bitangentSign;
+        int cornerZ = sideAZ + bitangent[2] * bitangentSign;
+        boolean sideA = world.get(sideAX, sideAY, sideAZ) != 0;
+        boolean sideB = world.get(sideBX, sideBY, sideBZ) != 0;
+        boolean corner = world.get(cornerX, cornerY, cornerZ) != 0;
+        int occlusion = sideA && sideB ? 3 : (sideA ? 1 : 0) + (sideB ? 1 : 0) + (corner ? 1 : 0);
+        return 1f - occlusion * .15f;
+    }
+
+    private static int coordinateSign(float[] point, int[] axis) {
+        if (axis[0] != 0) return point[0] < .5f ? -1 : 1;
+        if (axis[1] != 0) return point[1] < .5f ? -1 : 1;
+        return point[2] < .5f ? -1 : 1;
     }
 
     private static float textureU(float[] p, int face) {
@@ -342,7 +394,7 @@ final class Game {
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 80, 16, 0, GL_RGBA, GL_UNSIGNED_BYTE, TextureGenerator.pixels());
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, TextureGenerator.width(), 16, 0, GL_RGBA, GL_UNSIGNED_BYTE, TextureGenerator.pixels());
         return id;
     }
     private static int shader(int type,String source){int s=glCreateShader(type);glShaderSource(s,source);glCompileShader(s);if(glGetShaderi(s,GL_COMPILE_STATUS)==GL_FALSE)throw new IllegalStateException(glGetShaderInfoLog(s));return s;}
