@@ -290,14 +290,31 @@ final class MarchingCubesMesher {
             if (values[i] < 0.5f) cubeIndex |= 1 << i;
         }
         int[] triangles = TRIANGLE_TABLE[cubeIndex];
+        int material = material(values, world, x, y, z);
         for (int i = 0; i < triangles.length && triangles[i] >= 0; i += 3) {
             float[][] vertices = {
                     intersection(x, y, z, triangles[i], values),
                     intersection(x, y, z, triangles[i + 1], values),
                     intersection(x, y, z, triangles[i + 2], values)
             };
-            putTriangle(world, mesh, vertices);
+            putTriangle(world, mesh, vertices, material);
         }
+    }
+
+    private static int material(float[] values, World world, int x, int y, int z) {
+        int[] counts = new int[8];
+        for (int i = 0; i < values.length; i++) {
+            if (values[i] < .5f) {
+                int type = world.get(x + (int) CORNERS[i][0], y + (int) CORNERS[i][1],
+                        z + (int) CORNERS[i][2]) & 0xFF;
+                if (type > 0 && type < counts.length) counts[type]++;
+            }
+        }
+        int selected = 3;
+        for (int type = 1; type < counts.length; type++) {
+            if (counts[type] > counts[selected]) selected = type;
+        }
+        return selected;
     }
 
     private static float[] intersection(int x, int y, int z, int edge, float[] values) {
@@ -310,7 +327,7 @@ final class MarchingCubesMesher {
         return new float[] {x + pa[0] + (pb[0] - pa[0]) * t, y + pa[1] + (pb[1] - pa[1]) * t, z + pa[2] + (pb[2] - pa[2]) * t};
     }
 
-    private static void putTriangle(World world, NativeMesh mesh, float[][] vertices) {
+    private static void putTriangle(World world, NativeMesh mesh, float[][] vertices, int material) {
         float[] a = vertices[0], b = vertices[1], c = vertices[2];
         float ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2];
         float vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
@@ -343,7 +360,8 @@ final class MarchingCubesMesher {
                 textureV = vertex[1] - (float) Math.floor(vertex[1]);
                 section = 1;
             }
-            float u = (textureU * 15f + .5f) / TextureGenerator.width();
+            int tile = Math.max(0, Math.min(7, material - 1));
+            float u = (tile * 16f + textureU * 15f + .5f) / TextureGenerator.width();
             float v = ((2 - section) * 16f + textureV * 15f + .5f) / TextureGenerator.height();
             mesh.put(vertex[0], vertex[1], vertex[2], gx, gy, gz, u, v, 1f);
         }

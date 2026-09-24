@@ -461,7 +461,7 @@ final class Game {
             pendingMeshes.remove(key);
             try {
                 ChunkBuild build = pending.get();
-                if (build.revision != world.revision()) {
+                if (build.revision != world.chunkRevision(chunkX, chunkZ)) {
                     build.mesh.free();
                     return cached;
                 }
@@ -506,7 +506,7 @@ final class Game {
                 throw new CancellationException("Chunk build interrupted");
             }
             MarchingCubesMesher.build(world, data, startX, startZ);
-            return new ChunkBuild(world.revision(), data);
+            return new ChunkBuild(world.chunkRevision(chunkX, chunkZ), data);
         } catch (CancellationException e) {
             data.free();
             throw e;

@@ -19,6 +19,7 @@ final class World {
     private final long seed;
     private final Map<Long, Chunk> chunks = new HashMap<>();
     private final Set<Long> dirtyChunks = new HashSet<>();
+    private final Map<Long, Long> chunkRevisions = new HashMap<>();
     private long revision;
 
     World(long seed) {
@@ -116,6 +117,7 @@ final class World {
     synchronized void close() {
         for (Chunk chunk : chunks.values()) nmemFree(chunk.address);
         chunks.clear();
+        chunkRevisions.clear();
     }
 
     synchronized long revision() {
@@ -128,6 +130,10 @@ final class World {
         return result;
     }
 
+    synchronized long chunkRevision(int chunkX, int chunkZ) {
+        return chunkRevisions.getOrDefault(renderChunkKey(chunkX, chunkZ), 0L);
+    }
+
     private void markDirty(int x, int y, int z) {
         int chunkX = Math.floorDiv(x, CHUNK_SIZE);
         int chunkY = Math.floorDiv(y, CHUNK_SIZE);
@@ -136,7 +142,9 @@ final class World {
             for (int oy = -1; oy <= 1; oy++) {
                 for (int oz = -1; oz <= 1; oz++) {
                     if (Math.abs(ox) + Math.abs(oy) + Math.abs(oz) <= 1) {
-                        dirtyChunks.add(renderChunkKey(chunkX + ox, chunkZ + oz));
+                        long key = renderChunkKey(chunkX + ox, chunkZ + oz);
+                        dirtyChunks.add(key);
+                        chunkRevisions.put(key, chunkRevisions.getOrDefault(key, 0L) + 1L);
                     }
                 }
             }
