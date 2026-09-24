@@ -58,15 +58,25 @@ final class MarchingCubesMesher {
         }
         if (count < 3) return;
         for (int i = 1; i + 1 < count; i++) {
-            put(mesh, intersections[0]);
-            put(mesh, intersections[i]);
-            put(mesh, intersections[i + 1]);
+            put(mesh, intersections[0], intersections[i], intersections[i + 1]);
         }
     }
 
-    private static void put(NativeMesh mesh, float[] point) {
+    private static void put(NativeMesh mesh, float[] a, float[] b, float[] c) {
+        float ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2];
+        float vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
+        float nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+        float length = (float) Math.sqrt(nx * nx + ny * ny + nz * nz);
+        if (length < 0.0001f) return;
+        nx /= length; ny /= length; nz /= length;
+        putVertex(mesh, a, nx, ny, nz);
+        putVertex(mesh, b, nx, ny, nz);
+        putVertex(mesh, c, nx, ny, nz);
+    }
+
+    private static void putVertex(NativeMesh mesh, float[] point, float nx, float ny, float nz) {
         float u = (point[0] - (float) Math.floor(point[0])) * .5f;
         float v = (point[2] - (float) Math.floor(point[2])) * .5f;
-        mesh.put(point[0], point[1], point[2], u, v, 1f);
+        mesh.put(point[0], point[1], point[2], nx, ny, nz, u, v, 1f);
     }
 }

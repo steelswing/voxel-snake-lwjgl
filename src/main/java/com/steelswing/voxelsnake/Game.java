@@ -403,11 +403,13 @@ final class Game {
         glBindTexture(GL_TEXTURE_2D, texture);
         glUniform1i(glGetUniformLocation(program, "atlas"), 0);
         int position = glGetAttribLocation(program, "position");
+        int normal = glGetAttribLocation(program, "normal");
         int texCoord = glGetAttribLocation(program, "texCoord");
         int light = glGetAttribLocation(program, "light");
-        glEnableVertexAttribArray(position); glVertexAttribPointer(position, 3, GL_FLOAT, false, 24, 0);
-        glEnableVertexAttribArray(texCoord); glVertexAttribPointer(texCoord, 2, GL_FLOAT, false, 24, 12);
-        glEnableVertexAttribArray(light); glVertexAttribPointer(light, 1, GL_FLOAT, false, 24, 20);
+        glEnableVertexAttribArray(position); glVertexAttribPointer(position, 3, GL_FLOAT, false, 36, 0);
+        glEnableVertexAttribArray(normal); glVertexAttribPointer(normal, 3, GL_FLOAT, false, 36, 12);
+        glEnableVertexAttribArray(texCoord); glVertexAttribPointer(texCoord, 2, GL_FLOAT, false, 36, 24);
+        glEnableVertexAttribArray(light); glVertexAttribPointer(light, 1, GL_FLOAT, false, 36, 32);
         glUniformMatrix4fv(glGetUniformLocation(program, "matrix"), false,
                 matrix(ex, ey, ez, tx, ty, tz, size[0] / (float) height[0]));
         glUniform3f(glGetUniformLocation(program, "fogOrigin"), ex, ey, ez);
@@ -426,9 +428,10 @@ final class Game {
                 ChunkMesh mesh = chunkMesh(chunkX, chunkZ);
                 if (mesh == null) continue;
                 glBindBuffer(GL_ARRAY_BUFFER, mesh.vbo);
-                glVertexAttribPointer(position, 3, GL_FLOAT, false, 24, 0);
-                glVertexAttribPointer(texCoord, 2, GL_FLOAT, false, 24, 12);
-                glVertexAttribPointer(light, 1, GL_FLOAT, false, 24, 20);
+                glVertexAttribPointer(position, 3, GL_FLOAT, false, 36, 0);
+                glVertexAttribPointer(normal, 3, GL_FLOAT, false, 36, 12);
+                glVertexAttribPointer(texCoord, 2, GL_FLOAT, false, 36, 24);
+                glVertexAttribPointer(light, 1, GL_FLOAT, false, 36, 32);
                 glDrawArrays(GL_TRIANGLES, 0, mesh.vertices);
             }
         }
@@ -437,11 +440,12 @@ final class Game {
             for (int[] part : snake) cube(entities, part[0], part[1], part[2], 6);
             cube(entities, apple[0], apple[1], apple[2], 7);
             glBindBuffer(GL_ARRAY_BUFFER, entityVbo);
-            glVertexAttribPointer(position, 3, GL_FLOAT, false, 24, 0);
-            glVertexAttribPointer(texCoord, 2, GL_FLOAT, false, 24, 12);
-            glVertexAttribPointer(light, 1, GL_FLOAT, false, 24, 20);
+            glVertexAttribPointer(position, 3, GL_FLOAT, false, 36, 0);
+            glVertexAttribPointer(normal, 3, GL_FLOAT, false, 36, 12);
+            glVertexAttribPointer(texCoord, 2, GL_FLOAT, false, 36, 24);
+            glVertexAttribPointer(light, 1, GL_FLOAT, false, 36, 32);
             glBufferData(GL_ARRAY_BUFFER, memByteBuffer(entities.address, entities.floats * 4), GL_STREAM_DRAW);
-            glDrawArrays(GL_TRIANGLES, 0, entities.floats / 6);
+            glDrawArrays(GL_TRIANGLES, 0, entities.floats / 9);
         } finally {
             entities.free();
         }
@@ -466,7 +470,7 @@ final class Game {
                     glBindBuffer(GL_ARRAY_BUFFER, vbo);
                     glBufferData(GL_ARRAY_BUFFER, memByteBuffer(build.mesh.address, build.mesh.floats * 4), GL_STATIC_DRAW);
                     checkGl("chunk upload " + chunkX + "," + chunkZ);
-                    ChunkMesh replacement = new ChunkMesh(vbo, build.mesh.floats / 6);
+                    ChunkMesh replacement = new ChunkMesh(vbo, build.mesh.floats / 9);
                     ChunkMesh previous = meshes.put(key, replacement);
                     if (previous != null) glDeleteBuffers(previous.vbo);
                     invalidatedMeshes.remove(key);
@@ -557,7 +561,7 @@ final class Game {
             float u = (tile * 16f + textureU(p[i], face) * 15f + .5f) / TextureGenerator.width();
             float v = ((2 - section) * 16f + textureV(p[i], face) * 15f + .5f) / TextureGenerator.height();
             float ao = ambientOcclusion(x, y, z, face, p[i]);
-            b.put(x+p[i][0], y+p[i][1], z+p[i][2], u, v, faceLight * ao);
+            b.put(x+p[i][0], y+p[i][1], z+p[i][2], 0, 1, 0, u, v, faceLight * ao);
         }
 
     }
@@ -627,8 +631,8 @@ final class Game {
     private static float dot(float[] a,float x,float y,float z){return a[0]*x+a[1]*y+a[2]*z;}
 
     private static int createProgram() {
-        int vs=shader(GL_VERTEX_SHADER,"#version 120\nattribute vec3 position; attribute vec2 texCoord; attribute float light; varying vec2 vTexCoord; varying float vLight; varying float vDistance; uniform mat4 matrix; uniform vec3 fogOrigin; void main(){gl_Position=matrix*vec4(position,1.0);vTexCoord=texCoord;vLight=light;vDistance=distance(position,fogOrigin);}");
-        int fs=shader(GL_FRAGMENT_SHADER,"#version 120\nuniform sampler2D atlas; uniform float useTexture; uniform vec4 tint; uniform float fogStart; uniform float fogEnd; varying vec2 vTexCoord; varying float vLight; varying float vDistance; void main(){vec4 color=useTexture > 0.5 ? texture2D(atlas,vTexCoord)*vLight : tint; float fog=clamp((vDistance-fogStart)/(fogEnd-fogStart),0.0,1.0); color.rgb=mix(color.rgb,vec3(0.56,0.72,0.88),fog); gl_FragColor=color;}");
+        int vs=shader(GL_VERTEX_SHADER,"#version 120\nattribute vec3 position; attribute vec3 normal; attribute vec2 texCoord; attribute float light; varying vec2 vTexCoord; varying float vLight; varying vec3 vNormal; varying vec3 vWorldPosition; uniform mat4 matrix; void main(){gl_Position=matrix*vec4(position,1.0);vTexCoord=texCoord;vLight=light;vNormal=normal;vWorldPosition=position;}");
+        int fs=shader(GL_FRAGMENT_SHADER,"#version 120\nuniform sampler2D atlas; uniform float useTexture; uniform vec4 tint; uniform float fogStart; uniform float fogEnd; uniform vec3 fogOrigin; varying vec2 vTexCoord; varying float vLight; varying vec3 vNormal; varying vec3 vWorldPosition; void main(){vec4 color=useTexture > 0.5 ? texture2D(atlas,vTexCoord)*vLight : tint; if(color.a < 0.5) discard; vec3 n=normalize(vNormal); vec3 sun=normalize(vec3(-0.45,0.85,-0.35)); float diffuse=0.35+0.65*max(dot(n,sun),0.0); color.rgb*=diffuse; float fog=clamp((distance(vWorldPosition,fogOrigin)-fogStart)/(fogEnd-fogStart),0.0,1.0); color.rgb=mix(color.rgb,vec3(0.56,0.72,0.88),fog); gl_FragColor=color;}");
         int p=glCreateProgram();glAttachShader(p,vs);glAttachShader(p,fs);glLinkProgram(p);
         if (glGetProgrami(p, GL_LINK_STATUS) == GL_FALSE) {
             String info = glGetProgramInfoLog(p);
