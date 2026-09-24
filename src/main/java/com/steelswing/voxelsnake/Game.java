@@ -381,8 +381,9 @@ final class Game {
         float[][] p={{0,0,0},{1,0,0},{1,1,0},{0,1,0},{0,0,1},{1,0,1},{1,1,1},{0,1,1}};
         int tile = tileFor(type, face);
         for (int i : f[face]) {
+            int section = face == 0 ? 0 : face == 1 ? 2 : 1;
             float u = (tile * 16f + textureU(p[i], face) * 15f + .5f) / TextureGenerator.width();
-            float v = (textureV(p[i], face) * 15f + .5f) / 16f;
+            float v = ((2 - section) * 16f + textureV(p[i], face) * 15f + .5f) / TextureGenerator.height();
             float ao = ambientOcclusion(x, y, z, face, p[i]);
             b.put(x+p[i][0], y+p[i][1], z+p[i][2], u, v, faceLight * ao);
         }
@@ -390,13 +391,7 @@ final class Game {
     }
 
     private static int tileFor(int type, int face) {
-        if (type == 1) return face == 0 ? 0 : face == 1 ? 2 : 1;
-        if (type == 2) return 2;
-        if (type == 3) return 3;
-        if (type == 4) return 4;
-        if (type == 5) return 5;
-        if (type == 6) return 6;
-        return 7;
+        return Math.max(0, Math.min(7, type - 1));
     }
 
     private float ambientOcclusion(int x, int y, int z, int face, float[] point) {
@@ -473,7 +468,8 @@ final class Game {
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         long pixels = TextureGenerator.pixels();
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, TextureGenerator.width(), 16, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, TextureGenerator.width(), TextureGenerator.height(), 0,
+                GL_RGBA, GL_UNSIGNED_BYTE, pixels);
         nmemFree(pixels);
         return id;
     }

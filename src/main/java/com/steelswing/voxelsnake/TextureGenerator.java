@@ -1,100 +1,124 @@
 package com.steelswing.voxelsnake;
 
-import java.awt.image.BufferedImage;
-import java.util.Random;
-
 import static org.lwjgl.system.MemoryUtil.memPutByte;
 import static org.lwjgl.system.MemoryUtil.nmemAlloc;
-import static org.lwjgl.system.MemoryUtil.nmemFree;
 
-/** Generates a noisy, layered pixel atlas using the reference project's approach. */
+/**
+ * Minecraft4K-inspired procedural atlas.
+ *
+ * <p>Each material occupies one 16x48 cell: top, side and bottom. The single
+ * deterministic LCG stream is intentionally shared by the whole atlas, which
+ * gives neighboring pixels the same clustered noise as the reference.</p>
+ */
 final class TextureGenerator {
-    private static final int TILE = 16;
+    static final int TILE_SIZE = 16;
+    static final int SECTION_COUNT = 3;
+    static final int HEIGHT = TILE_SIZE * SECTION_COUNT;
+
     private static final int[] BASE = {
-            0x6aaa40, 0x6aaa40, 0x966c4a, 0x7f7f7f,
-            0x675231, 0xb53a15, 0x35b84a, 0xe63224
+            0x6AAA40, 0x966C4A, 0x7F7F7F, 0x675231,
+            0x50D937, 0x35B84A, 0xE63224, 0xB53A15
     };
 
-    private TextureGenerator() { }
+    private static final long LCG_MULTIPLIER = 1664525L;
+    private static final long LCG_INCREMENT = 1013904223L;
+    private static final long LCG_MASK = 0xFFFFFFFFL;
+    private static final long SEED = 151910774L;
 
-    static BufferedImage atlas() {
-        BufferedImage image = new BufferedImage(TILE * BASE.length, TILE, BufferedImage.TYPE_INT_ARGB);
-        Random random = new Random(0x1172981L);
-        for (int layer = 0; layer < BASE.length; layer++) {
-            for (int y = 0; y < TILE; y++) {
-                for (int x = 0; x < TILE; x++) {
-                    image.setRGB(layer * TILE + x, y, 0xff000000 | color(layer, x, y, random));
-                }
-            }
-        }
-        return image;
+    private TextureGenerator() {
     }
 
     static int width() {
-        return TILE * BASE.length;
+        return TILE_SIZE * BASE.length;
+    }
+
+    static int height() {
+        return HEIGHT;
     }
 
     static long pixels() {
-        BufferedImage image = atlas();
-        long pixels = nmemAlloc((long) image.getWidth() * image.getHeight() * 4L);
-        long at = pixels;
-        for (int y = image.getHeight() - 1; y >= 0; y--) {
-            for (int x = 0; x < image.getWidth(); x++) {
-                int color = image.getRGB(x, y);
-                memPutByte(at++, (byte) (color >> 16));
-                memPutByte(at++, (byte) (color >> 8));
-                memPutByte(at++, (byte) color);
-                memPutByte(at++, (byte) 0xff);
+        long address = nmemAlloc((long) width() * HEIGHT * 4L);
+        long state = SEED;
+        long at = address;
+        for (int y = HEIGHT - 1; y >= 0; y--) {
+            int section = y / TILE_SIZE;
+            int localY = y & (TILE_SIZE - 1);
+            for (int material = 0; material < BASE.length; material++) {
+                for (int x = 0; x < TILE_SIZE; x++) {
+                    state = (state * LCG_MULTIPLIER + LCG_INCREMENT) & LCG_MASK;
+                    int random = (int) ((state >>> 16) % 96);
+                    int rgb = color(material, section, x, localY, random);
+                    memPutByte(at++, (byte) (rgb >> 16));
+                    memPutByte(at++, (byte) (rgb >> 8));
+                    memPutByte(at++, (byte) rgb);
+                    memPutByte(at++, (byte) 0xFF);
+                }
             }
         }
-        return pixels;
+        return address;
     }
 
-    /** Stable per-block colour: no flicker and no external image assets required. */
-    static float[] color(int type, int x, int y, int z, int face) {
-        int layer = Math.floorMod(type - 1, BASE.length);
-        long hash = x * 73428767L ^ y * 912931L ^ z * 42317861L ^ face * 31L;
-        Random random = new Random(hash);
-        int brightness = 178 + random.nextInt(64);
-        if (face == 2) brightness = Math.min(255, brightness + 26);
-        if (face == 3) brightness = Math.max(80, brightness - 35);
-        int c = BASE[layer];
-        return new float[]{((c >> 16) & 255) * brightness / 65025f,
-                ((c >> 8) & 255) * brightness / 65025f,
-                (c & 255) * brightness / 65025f};
-    }
+    private static int color(int material, int section, int x, int y, int random) {
+        int brightness = 160 + random;
+        int rgb = BASE[material];
 
-    private static int color(int layer, int x, int y, Random random) {
-        int brightness = 172 + random.nextInt(70);
-        if (layer == 0) {
-            int grassLine = 10 + (x * x * 3 + x * 81 >>> 2 & 3);
-            if (y < grassLine) return shade(0x6aaa40, brightness);
-            brightness = brightness * 2 / 3;
-        } else if (layer == 1) {
-            brightness = brightness * 2 / 3;
-            if (((x * 3 + y * 7) & 15) == 0) brightness = Math.min(255, brightness + 22);
-        } else if (layer == 2 && ((x + y * 3) & 7) == 0) {
-            brightness = Math.min(255, brightness + 28);
-        } else if (layer == 4) {
-            if (x > 0 && x < 15 && y > 0 && y < 15) {
-                brightness = 164 + random.nextInt(36) + Math.max(Math.abs(x - 7), Math.abs(y - 7)) % 3 * 24;
-                if ((x + y) % 5 == 0) return shade(0xbc9862, brightness);
-            } else if (random.nextBoolean()) {
-                brightness = brightness * (150 - (x & 1) * 60) / 100;
-            }
-        } else if (layer == 5 && (x % 4 == 0 || y % 4 == 0)) {
-            return shade(0xbcafa5, brightness);
-        } else if (layer == 6) {
-            brightness = 210 + random.nextInt(46);
-        } else if (layer == 7) {
-            brightness = 210 + random.nextInt(46);
+        switch (material) {
+            case 0:
+                if (section == 0) {
+                    rgb = shade(0x6AAA40, brightness);
+                } else if (section == 1) {
+                    int edge = ((x * x * 3 + x * 81) >> 2) & 3;
+                    rgb = y < edge + 3 ? shade(0x6AAA40, brightness) : shade(0x966C4A, brightness * 2 / 3);
+                } else {
+                    rgb = shade(0x966C4A, brightness * 2 / 3);
+                }
+                break;
+            case 1:
+                rgb = shade(0x966C4A, brightness * 2 / 3);
+                if (((x * 3 + y * 7) & 15) == 0) rgb = shade(rgb, 1.2f);
+                break;
+            case 2:
+                if (((x / 2 + y / 2) & 3) == 0) brightness = 190 + random / 3;
+                rgb = shade(0x7F7F7F, brightness);
+                break;
+            case 3:
+                if (section == 0 || section == 2) {
+                    int dx = x - 7;
+                    int dy = y - 7;
+                    int ring = (int) Math.sqrt(dx * dx + dy * dy);
+                    rgb = shade(0xBC9862, ring % 2 == 0 ? brightness : brightness * 3 / 4);
+                } else {
+                    rgb = shade(0x675231, brightness * (150 - (x & 1) * 55) / 100);
+                }
+                break;
+            case 4:
+                rgb = shade(0x50D937, 190 + random / 2);
+                break;
+            case 5:
+                rgb = shade(0x35B84A, 190 + random / 2);
+                break;
+            case 6:
+                rgb = shade(0xE63224, 190 + random / 2);
+                if ((x + y * 3) % 11 == 0) rgb = shade(0x7D201A, brightness);
+                break;
+            case 7:
+                rgb = shade(0xB53A15, 190 + random / 2);
+                if ((x + y) % 5 == 0) rgb = shade(0xF2C4A0, brightness);
+                break;
+            default:
+                break;
         }
-        return shade(BASE[layer], brightness);
+        return rgb;
     }
 
     private static int shade(int rgb, int brightness) {
-        return (((rgb >> 16) & 255) * brightness / 255 << 16)
-                | (((rgb >> 8) & 255) * brightness / 255 << 8)
-                | ((rgb & 255) * brightness / 255);
+        int r = Math.min(255, ((rgb >> 16) & 255) * brightness / 255);
+        int g = Math.min(255, ((rgb >> 8) & 255) * brightness / 255);
+        int b = Math.min(255, (rgb & 255) * brightness / 255);
+        return (r << 16) | (g << 8) | b;
+    }
+
+    private static int shade(int rgb, float brightness) {
+        return shade(rgb, Math.round(brightness * 255f));
     }
 }
