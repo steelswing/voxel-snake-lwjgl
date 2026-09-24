@@ -133,7 +133,8 @@ final class Game {
         float scale=1f/(float)Math.tan(Math.toRadians(55)/2);
         m[0]=scale/aspect*s[0];m[4]=scale/aspect*s[1];m[8]=scale/aspect*s[2];m[1]=scale*u[0];m[5]=scale*u[1];m[9]=scale*u[2];m[2]=-f[0];m[6]=-f[1];m[10]=-f[2];m[12]=-dot(s,ex,ey,ez);m[13]=-dot(u,ex,ey,ez);m[14]=dot(f,ex,ey,ez);m[15]=1;return m;
     }
-    private static float[] normalize(float x,float y,float z){float l=(float)Math.sqrt(x*x+y*y+z*z);return new float[]{x/l,y/l,z/l];}
+    private static float[] normalize(float x,float y,float z){float l=(float)Math.sqrt(x*x+y*y+z*z);return new float[]{x/l,y/l,z/l};}
+    private static float[] normalize(float[] v){return normalize(v[0],v[1],v[2]);}
     private static float[] cross(float[] a,float[] b){return new float[]{a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]};}
     private static float dot(float[] a,float x,float y,float z){return a[0]*x+a[1]*y+a[2]*z;}
 

@@ -32,8 +32,11 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@v2
+
       - name: Build project
-        run: ./gradlew clean build --no-daemon
+        run: ./gradlew --no-daemon clean build
 
       - name: Upload JAR
         uses: actions/upload-artifact@v4
@@ -43,7 +46,7 @@ jobs:
           if-no-files-found: error
 
       - name: Build application distribution
-        run: ./gradlew installDist --no-daemon
+        run: ./gradlew --no-daemon installDist
 
       - name: Upload application distribution
         uses: actions/upload-artifact@v4
@@ -75,7 +78,7 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
 
       - name: Build release artifacts
-        run: ./gradlew clean jar distZip --no-daemon
+        run: ./gradlew --no-daemon clean jar distZip
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
