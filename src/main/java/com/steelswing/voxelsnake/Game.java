@@ -12,6 +12,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import static org.lwjgl.glfw.GLFW.*;
 import static org.lwjgl.opengl.GL11C.*;
@@ -56,7 +57,7 @@ final class Game {
     private final Map<Long, ChunkMesh> meshes = new HashMap<>();
     private final Map<Long, Future<ChunkBuild>> pendingMeshes = new HashMap<>();
     private final ExecutorService meshExecutor = Executors.newFixedThreadPool(
-            Math.max(1, Runtime.getRuntime().availableProcessors() - 1));
+            Math.min(4, Math.max(1, Runtime.getRuntime().availableProcessors() - 1)));
     private boolean snakeDead;
     private int pendingDx = 1;
     private int pendingDz;
@@ -71,6 +72,13 @@ final class Game {
             for (Future<ChunkBuild> pending : pendingMeshes.values()) pending.cancel(true);
             pendingMeshes.clear();
             meshExecutor.shutdownNow();
+            try {
+                if (!meshExecutor.awaitTermination(2, TimeUnit.SECONDS)) {
+                    System.err.println("Chunk mesh workers did not stop within timeout");
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
             world.close();
             selectionRenderer.free();
             if (window != NULL) glfwDestroyWindow(window);
