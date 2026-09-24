@@ -179,11 +179,10 @@ final class World {
                 for (int y = HEIGHT - 1; y >= 0; y--) {
                     int index = localX | (y << 5) | (localZ << 12);
                     if (get(startX + localX, y, startZ + localZ) != 0) {
-                        sunlight = 0;
-                    } else {
-                        map[index] = (byte) sunlight;
-                        if (sunlight > 1) queue.add(index);
+                        sunlight = Math.max(0, sunlight - 3);
                     }
+                    map[index] = (byte) sunlight;
+                    if (sunlight > 1) queue.add(index);
                 }
             }
         }
@@ -194,10 +193,8 @@ final class World {
             if (lampX < startX || lampX >= startX + CHUNK_SIZE
                     || lampZ < startZ || lampZ >= startZ + CHUNK_SIZE) continue;
             int index = (lampX - startX) | (lampY << 5) | ((lampZ - startZ) << 12);
-            if (get(lampX, lampY, lampZ) == 6) {
-                map[index] = 14;
-                queue.add(index);
-            }
+            map[index] = 14;
+            queue.add(index);
         }
         while (!queue.isEmpty()) {
             int index = queue.removeFirst();
