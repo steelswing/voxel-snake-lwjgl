@@ -19,7 +19,8 @@ final class Game {
     private final World world = new World(0x5EEDL);
     private final List<int[]> snake = new ArrayList<>();
     private boolean editMode;
-    private int dx = 1, dz;
+    private int dx = 1;
+    private int dz;
     private double nextStep;
     private double cameraAngle;
 
@@ -42,9 +43,9 @@ final class Game {
         GL.createCapabilities();
         glEnable(GL_DEPTH_TEST);
         program = createProgram();
-        snake.add(new int[]{16, world.surface(16, 16) + 1, 16});
-        snake.add(new int[]{15, world.surface(15, 16) + 1, 16});
-        snake.add(new int[]{14, world.surface(14, 16) + 1, 16});
+        addSnake(16, 16);
+        addSnake(15, 16);
+        addSnake(14, 16);
         glfwSetKeyCallback(window, (w, key, scan, action, mods) -> {
             if (action != GLFW_PRESS) return;
             if (key == GLFW_KEY_ESCAPE) glfwSetWindowShouldClose(window, true);
@@ -56,6 +57,8 @@ final class Game {
             if (editMode && (key == GLFW_KEY_Q || key == GLFW_KEY_E)) editBlock(key == GLFW_KEY_E);
         });
     }
+
+    private void addSnake(int x, int z) { snake.add(new int[]{x, world.surface(x, z) + 1, z}); }
 
     private void editBlock(boolean add) {
         int[] head = snake.get(0);
@@ -85,8 +88,9 @@ final class Game {
 
     private void render() {
         int[] size = new int[2];
-        glfwGetFramebufferSize(window, size, new int[1]);
-        glViewport(0, 0, size[0], size[1]);
+        int[] height = new int[1];
+        glfwGetFramebufferSize(window, size, height);
+        glViewport(0, 0, size[0], height[0]);
         glClearColor(.42f, .68f, .92f, 1);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         int[] head = snake.get(0);
@@ -94,38 +98,42 @@ final class Game {
         float ex = head[0] + (float) Math.cos(cameraAngle) * 22;
         float ey = head[1] + 15;
         float ez = head[2] + (float) Math.sin(cameraAngle) * 22;
-        glUseProgram(program);
         FloatBuffer data = BufferUtils.createFloatBuffer((World.SIZE * World.HEIGHT * World.SIZE + snake.size()) * 36 * 6);
         for (int x = 0; x < World.SIZE; x++) for (int y = 0; y < World.HEIGHT; y++) for (int z = 0; z < World.SIZE; z++) {
             int type = world.get(x, y, z);
-            if (type != 0) cube(data, x, y, z, type == 1 ? .25f : type == 2 ? .58f : .36f, type == 1 ? .65f : type == 2 ? .38f : .22f, type == 3 ? .12f : .12f);
+            if (type != 0) cube(data, x, y, z, type);
         }
-        for (int[] part : snake) cube(data, part[0], part[1], part[2], .85f, .12f, .08f);
+        for (int[] part : snake) cube(data, part[0], part[1], part[2], 6);
         data.flip();
         int vbo = glGenBuffers();
         glBindBuffer(GL_ARRAY_BUFFER, vbo);
         glBufferData(GL_ARRAY_BUFFER, data, GL_STREAM_DRAW);
+        glUseProgram(program);
         int position = glGetAttribLocation(program, "position");
         int color = glGetAttribLocation(program, "color");
         glEnableVertexAttribArray(position); glVertexAttribPointer(position, 3, GL_FLOAT, false, 24, 0);
         glEnableVertexAttribArray(color); glVertexAttribPointer(color, 3, GL_FLOAT, false, 24, 12);
-        glUniformMatrix4fv(glGetUniformLocation(program, "matrix"), false, matrix(ex, ey, ez, head[0], head[1], head[2], size[0] / (float) size[1]));
+        glUniformMatrix4fv(glGetUniformLocation(program, "matrix"), false,
+                matrix(ex, ey, ez, head[0], head[1], head[2], size[0] / (float) height[0]));
         glDrawArrays(GL_TRIANGLES, 0, data.limit() / 6);
         glDeleteBuffers(vbo);
     }
 
-    private static void cube(FloatBuffer b, float x, float y, float z, float r, float g, float blue) {
+    private static void cube(FloatBuffer b, int x, int y, int z, int type) {
         float[][] p={{0,0,0},{1,0,0},{1,1,0},{0,1,0},{0,0,1},{1,0,1},{1,1,1},{0,1,1}};
         int[][] f={{0,1,2,2,3,0},{5,4,7,7,6,5},{4,0,3,3,7,4},{1,5,6,6,2,1},{3,2,6,6,7,3},{4,5,1,1,0,4}};
-        for (int[] face:f) for (int i:face) b.put(x+p[i][0]).put(y+p[i][1]).put(z+p[i][2]).put(r).put(g).put(blue);
+        for (int face = 0; face < f.length; face++) {
+            float[] c = TextureGenerator.color(type, x, y, z, face);
+            for (int i : f[face]) b.put(x+p[i][0]).put(y+p[i][1]).put(z+p[i][2]).put(c[0]).put(c[1]).put(c[2]);
+        }
     }
 
     private static float[] matrix(float ex,float ey,float ez,float tx,float ty,float tz,float aspect) {
-        float[] f=normalize(tx-ex,ty-ey,tz-ez), up={0,1,0}, s=normalize(cross(f,up)), u=cross(s,f), m=new float[16];
+        float[] f=normalize(tx-ex,ty-ey,tz-ez),up={0,1,0},s=normalize(cross(f,up)),u=cross(s,f),m=new float[16];
         float scale=1f/(float)Math.tan(Math.toRadians(55)/2);
         m[0]=scale/aspect*s[0];m[4]=scale/aspect*s[1];m[8]=scale/aspect*s[2];m[1]=scale*u[0];m[5]=scale*u[1];m[9]=scale*u[2];m[2]=-f[0];m[6]=-f[1];m[10]=-f[2];m[12]=-dot(s,ex,ey,ez);m[13]=-dot(u,ex,ey,ez);m[14]=dot(f,ex,ey,ez);m[15]=1;return m;
     }
-    private static float[] normalize(float x,float y,float z){float l=(float)Math.sqrt(x*x+y*y+z*z);return new float[]{x/l,y/l,z/l};}
+    private static float[] normalize(float x,float y,float z){float l=(float)Math.sqrt(x*x+y*y+z*z);return new float[]{x/l,y/l,z/l];}
     private static float[] cross(float[] a,float[] b){return new float[]{a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]};}
     private static float dot(float[] a,float x,float y,float z){return a[0]*x+a[1]*y+a[2]*z;}
 
