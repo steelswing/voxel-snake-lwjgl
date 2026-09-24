@@ -19,6 +19,7 @@ final class World {
     private final long seed;
     private final Map<Long, Chunk> chunks = new HashMap<>();
     private final Set<Long> dirtyChunks = new HashSet<>();
+    private long revision;
 
     World(long seed) {
         this.seed = seed;
@@ -41,6 +42,7 @@ final class World {
         long address = chunk.address + index(x, y, z);
         if (memGetByte(address) != type) {
             memPutByte(address, type);
+            revision++;
             markDirty(x, y, z);
             return true;
         }
@@ -116,7 +118,11 @@ final class World {
         chunks.clear();
     }
 
-    Set<Long> consumeDirtyChunks() {
+    synchronized long revision() {
+        return revision;
+    }
+
+    synchronized Set<Long> consumeDirtyChunks() {
         Set<Long> result = new HashSet<>(dirtyChunks);
         dirtyChunks.clear();
         return result;

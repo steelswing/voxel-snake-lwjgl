@@ -5,8 +5,10 @@ import org.lwjgl.opengl.GL;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.Random;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.CancellationException;
@@ -62,6 +64,7 @@ final class Game {
     private int selectedBlock = 2;
     private final Map<Long, ChunkMesh> meshes = new HashMap<>();
     private final Map<Long, Future<ChunkBuild>> pendingMeshes = new HashMap<>();
+    private final Set<Long> invalidatedMeshes = new HashSet<>();
     private final ExecutorService meshExecutor = Executors.newFixedThreadPool(
             Math.min(4, Math.max(1, Runtime.getRuntime().availableProcessors() - 1)));
     private boolean snakeDead;
@@ -213,6 +216,7 @@ final class Game {
             double now = glfwGetTime();
             float frameTime = (float) Math.min(.1, Math.max(0, now - lastFrameTime));
             lastFrameTime = now;
+            if (!editMode) pollSnakeInput();
             if (!editMode && now >= nextStep) {
                 moveSnake();
                 nextStep += .22;
@@ -222,6 +226,13 @@ final class Game {
             render(frameTime);
             glfwSwapBuffers(window);
         }
+    }
+
+    private void pollSnakeInput() {
+        if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) turn(0, -1);
+        if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) turn(0, 1);
+        if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) turn(-1, 0);
+        if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) turn(1, 0);
     }
 
     private void updateFreeCamera(float dt) {
@@ -384,10 +395,7 @@ final class Game {
             tz = followTargetZ;
         }
         for (long dirtyKey : world.consumeDirtyChunks()) {
-            ChunkMesh dirtyMesh = meshes.remove(dirtyKey);
-            if (dirtyMesh != null) glDeleteBuffers(dirtyMesh.vbo);
-            Future<ChunkBuild> dirtyBuild = pendingMeshes.remove(dirtyKey);
-            if (dirtyBuild != null) dirtyBuild.cancel(true);
+            invalidatedMeshes.add(dirtyKey);
         }
         glUseProgram(program);
         glUniform1f(glGetUniformLocation(program, "useTexture"), 1f);
@@ -444,38 +452,45 @@ final class Game {
     private ChunkMesh chunkMesh(int chunkX, int chunkZ) {
         long key = World.renderChunkKey(chunkX, chunkZ);
         ChunkMesh cached = meshes.get(key);
-        if (cached != null) return cached;
         Future<ChunkBuild> pending = pendingMeshes.get(key);
+        if (pending != null && pending.isDone()) {
+            pendingMeshes.remove(key);
+            try {
+                ChunkBuild build = pending.get();
+                if (build.revision != world.revision()) {
+                    build.mesh.free();
+                    return cached;
+                }
+                int vbo = glGenBuffers();
+                try {
+                    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+                    glBufferData(GL_ARRAY_BUFFER, memByteBuffer(build.mesh.address, build.mesh.floats * 4), GL_STATIC_DRAW);
+                    checkGl("chunk upload " + chunkX + "," + chunkZ);
+                    ChunkMesh replacement = new ChunkMesh(vbo, build.mesh.floats / 6);
+                    ChunkMesh previous = meshes.put(key, replacement);
+                    if (previous != null) glDeleteBuffers(previous.vbo);
+                    invalidatedMeshes.remove(key);
+                    return replacement;
+                } finally {
+                    build.mesh.free();
+                }
+            } catch (CancellationException e) {
+                return cached;
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return cached;
+            } catch (ExecutionException e) {
+                log("Chunk mesh failed at " + chunkX + "," + chunkZ, e.getCause());
+                return cached;
+            }
+        }
+        if (cached != null && !invalidatedMeshes.contains(key)) return cached;
         if (pending == null) {
             pending = meshExecutor.submit(() -> buildChunk(chunkX, chunkZ));
             pendingMeshes.put(key, pending);
-            return null;
+            return cached;
         }
-        if (!pending.isDone()) return null;
-        pendingMeshes.remove(key);
-        try {
-            ChunkBuild build = pending.get();
-            int vbo = glGenBuffers();
-            try {
-                glBindBuffer(GL_ARRAY_BUFFER, vbo);
-                glBufferData(GL_ARRAY_BUFFER, memByteBuffer(build.mesh.address, build.mesh.floats * 4), GL_STATIC_DRAW);
-                checkGl("chunk upload " + chunkX + "," + chunkZ);
-                ChunkMesh mesh = new ChunkMesh(vbo, build.mesh.floats / 6);
-                meshes.put(key, mesh);
-                return mesh;
-            } finally {
-                build.mesh.free();
-            }
-        } catch (CancellationException e) {
-            log("Chunk mesh cancelled at " + chunkX + "," + chunkZ);
-            return null;
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            return null;
-        } catch (ExecutionException e) {
-            log("Chunk mesh failed at " + chunkX + "," + chunkZ, e.getCause());
-            return null;
-        }
+        return cached;
     }
 
     private ChunkBuild buildChunk(int chunkX, int chunkZ) {
@@ -494,7 +509,7 @@ final class Game {
                     }
                 }
             }
-            return new ChunkBuild(data);
+            return new ChunkBuild(world.revision(), data);
         } catch (CancellationException e) {
             data.free();
             throw e;
@@ -516,9 +531,11 @@ final class Game {
     }
 
     private static final class ChunkBuild {
+        private final long revision;
         private final NativeMesh mesh;
 
-        private ChunkBuild(NativeMesh mesh) {
+        private ChunkBuild(long revision, NativeMesh mesh) {
+            this.revision = revision;
             this.mesh = mesh;
         }
     }
