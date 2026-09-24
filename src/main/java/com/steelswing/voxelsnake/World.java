@@ -27,7 +27,6 @@ final class World {
         x = Math.floorMod(x, SIZE);
         z = Math.floorMod(z, SIZE);
         int chunkY = Math.floorDiv(y, CHUNK_SIZE);
-        if (chunkY != 0) return 0;
         Chunk chunk = chunk(Math.floorDiv(x, CHUNK_SIZE), chunkY, Math.floorDiv(z, CHUNK_SIZE));
         return memGetByte(chunk.address + index(x, y, z));
     }
@@ -64,22 +63,49 @@ final class World {
 
     private Chunk generate(int chunkX, int chunkY, int chunkZ) {
         Chunk chunk = new Chunk();
-        if (chunkY != 0) return chunk;
         for (int localX = 0; localX < CHUNK_SIZE; localX++) {
             for (int localZ = 0; localZ < CHUNK_SIZE; localZ++) {
                 int x = chunkX * CHUNK_SIZE + localX;
                 int z = chunkZ * CHUNK_SIZE + localZ;
-                double waves = Math.sin(x * .031) * 4.0
-                        + Math.cos(z * .027) * 3.0
-                        + Math.sin((x + z) * .013) * 5.0;
-                int surface = Math.max(1, Math.min(HEIGHT - 2, 8 + (int) Math.round(waves)));
-                for (int y = 0; y <= surface; y++) {
-                    byte type = (byte) (y == surface ? 1 : y > surface - 3 ? 2 : 3);
-                    memPutByte(chunk.address + (localX | (y << 5) | (localZ << 10)), type);
+                int surface = surfaceHeight(x, z);
+                int startY = chunkY * CHUNK_SIZE;
+                int endY = startY + CHUNK_SIZE;
+                for (int y = Math.max(0, startY); y < Math.min(HEIGHT, endY); y++) {
+                    byte type = (byte) (y == surface ? 1 : y < surface && y >= surface - 3 ? 2 : y < surface ? 3 : 0);
+                    if (type != 0) memPutByte(chunk.address + (localX | ((y & 31) << 5) | (localZ << 10)), type);
                 }
+                decorate(chunk, chunkX, chunkY, chunkZ, localX, localZ, x, z, surface);
             }
         }
         return chunk;
+    }
+
+    private int surfaceHeight(int x, int z) {
+        double waves = Math.sin(x * .031) * 4.0
+                + Math.cos(z * .027) * 3.0
+                + Math.sin((x + z) * .013) * 5.0;
+        return Math.max(2, Math.min(HEIGHT - 8, 8 + (int) Math.round(waves)));
+    }
+
+    private void decorate(Chunk chunk, int chunkX, int chunkY, int chunkZ, int localX, int localZ,
+                          int x, int z, int surface) {
+        long hash = x * 341873128712L ^ z * 132897987541L ^ seed;
+        if (Math.floorMod(hash, 37) == 0) {
+            for (int y = surface + 1; y <= surface + 4; y++) putIfLocal(chunk, chunkX, chunkY, chunkZ, x, y, z, (byte) 4);
+            for (int ox = -2; ox <= 2; ox++) for (int oy = 3; oy <= 5; oy++) for (int oz = -2; oz <= 2; oz++) {
+                if (Math.abs(ox) + Math.abs(oz) + Math.max(0, oy - 4) <= 3)
+                    putIfLocal(chunk, chunkX, chunkY, chunkZ, x + ox, surface + oy, z + oz, (byte) 5);
+            }
+        } else if (Math.floorMod(hash, 29) == 0) {
+            putIfLocal(chunk, chunkX, chunkY, chunkZ, x, surface + 1, z, (byte) 5);
+        }
+    }
+
+    private void putIfLocal(Chunk chunk, int chunkX, int chunkY, int chunkZ, int x, int y, int z, byte type) {
+        if (Math.floorDiv(x, CHUNK_SIZE) == chunkX && Math.floorDiv(y, CHUNK_SIZE) == chunkY
+                && Math.floorDiv(z, CHUNK_SIZE) == chunkZ && y >= 0 && y < HEIGHT) {
+            memPutByte(chunk.address + index(x, y, z), type);
+        }
     }
 
     void close() {

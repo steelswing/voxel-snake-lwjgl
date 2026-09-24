@@ -1,10 +1,8 @@
 package com.steelswing.voxelsnake;
 
-import org.lwjgl.BufferUtils;
 import org.lwjgl.glfw.GLFWErrorCallback;
 import org.lwjgl.opengl.GL;
 
-import java.nio.FloatBuffer;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -15,13 +13,19 @@ import static org.lwjgl.glfw.GLFW.*;
 import static org.lwjgl.opengl.GL11C.*;
 import static org.lwjgl.opengl.GL12C.*;
 import static org.lwjgl.opengl.GL20C.*;
+import static org.lwjgl.opengl.GL15C.nglBufferData;
 import static org.lwjgl.system.MemoryUtil.NULL;
+import static org.lwjgl.system.MemoryUtil.memPutFloat;
+import static org.lwjgl.system.MemoryUtil.nmemAlloc;
+import static org.lwjgl.system.MemoryUtil.nmemFree;
+import static org.lwjgl.system.MemoryUtil.nmemRealloc;
 
 final class Game {
     private long window;
     private int program;
     private int texture;
     private int entityVbo;
+    private int outlineVbo;
     private final World world = new World(0x5EEDL);
     private final List<int[]> snake = new ArrayList<>();
     private final Random random = new Random(0xA11CE);
@@ -62,6 +66,7 @@ final class Game {
             if (window != NULL) glfwDestroyWindow(window);
             glfwTerminate();
         }
+
     }
 
     private void init() {
@@ -80,6 +85,7 @@ final class Game {
         program = createProgram();
         texture = createTexture();
         entityVbo = glGenBuffers();
+        outlineVbo = glGenBuffers();
         addSnake(16, 16);
         addSnake(15, 16);
         addSnake(14, 16);
@@ -283,9 +289,11 @@ final class Game {
             for (ChunkMesh mesh : meshes.values()) glDeleteBuffers(mesh.vbo);
             meshes.clear();
             glDeleteBuffers(entityVbo);
+            glDeleteBuffers(outlineVbo);
             meshVersion = world.version();
         }
         glUseProgram(program);
+        glUniform1f(glGetUniformLocation(program, "useTexture"), 1f);
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, texture);
         glUniform1i(glGetUniformLocation(program, "atlas"), 0);
@@ -312,13 +320,15 @@ final class Game {
                 glDrawArrays(GL_TRIANGLES, 0, mesh.vertices);
             }
         }
-        FloatBuffer entities = BufferUtils.createFloatBuffer((snake.size() + 1) * 216);
+        NativeMesh entities = new NativeMesh((snake.size() + 1) * 216);
         for (int[] part : snake) cube(entities, part[0], part[1], part[2], 6);
         cube(entities, apple[0], apple[1], apple[2], 7);
-        entities.flip();
         glBindBuffer(GL_ARRAY_BUFFER, entityVbo);
-        glBufferData(GL_ARRAY_BUFFER, entities, GL_STREAM_DRAW);
-        glDrawArrays(GL_TRIANGLES, 0, entities.limit() / 6);
+        nglBufferData(GL_ARRAY_BUFFER, entities.floats * 4L, entities.address, GL_STREAM_DRAW);
+        glDrawArrays(GL_TRIANGLES, 0, entities.floats / 6);
+        entities.free();
+        int[] hit = editMode ? raycast() : null;
+        if (hit != null) drawSelection(hit, position, texCoord, light);
     }
 
     private ChunkMesh chunkMesh(int chunkX, int chunkZ) {
@@ -327,7 +337,7 @@ final class Game {
         long key = ((long) chunkX << 32) ^ (chunkZ & 0xffffffffL);
         ChunkMesh cached = meshes.get(key);
         if (cached != null) return cached;
-        FloatBuffer data = BufferUtils.createFloatBuffer(1_500_000);
+        NativeMesh data = new NativeMesh(262144);
         int startX = chunkX * World.CHUNK_SIZE;
         int startZ = chunkZ * World.CHUNK_SIZE;
         for (int x = startX; x < startX + World.CHUNK_SIZE; x++) {
@@ -338,11 +348,11 @@ final class Game {
                 }
             }
         }
-        data.flip();
         int vbo = glGenBuffers();
         glBindBuffer(GL_ARRAY_BUFFER, vbo);
-        glBufferData(GL_ARRAY_BUFFER, data, GL_STATIC_DRAW);
-        ChunkMesh mesh = new ChunkMesh(vbo, data.limit() / 6);
+        nglBufferData(GL_ARRAY_BUFFER, data.floats * 4L, data.address, GL_STATIC_DRAW);
+        ChunkMesh mesh = new ChunkMesh(vbo, data.floats / 6);
+        data.free();
         meshes.put(key, mesh);
         return mesh;
     }
@@ -357,13 +367,62 @@ final class Game {
         }
     }
 
-    private void cube(FloatBuffer b, int x, int y, int z, int type) {
+    private void drawSelection(int[] hit, int position, int texCoord, int light) {
+        NativeMesh outline = new NativeMesh(72);
+        float x = hit[0], y = hit[1], z = hit[2], e = .002f;
+        float[][] p = {{x-e,y-e,z-e},{x+1+e,y-e,z-e},{x+1+e,y+1+e,z-e},{x-e,y+1+e,z-e},
+                {x-e,y-e,z+1+e},{x+1+e,y-e,z+1+e},{x+1+e,y+1+e,z+1+e},{x-e,y+1+e,z+1+e}};
+        int[][] lines = {{0,1},{1,2},{2,3},{3,0},{4,5},{5,6},{6,7},{7,4},{0,4},{1,5},{2,6},{3,7}};
+        for (int[] line : lines) for (int vertex : line) outline.put(p[vertex][0], p[vertex][1], p[vertex][2], 0, 0, 1);
+        glBindBuffer(GL_ARRAY_BUFFER, outlineVbo);
+        nglBufferData(GL_ARRAY_BUFFER, outline.floats * 4L, outline.address, GL_STREAM_DRAW);
+        glDisable(GL_CULL_FACE);
+        glLineWidth(2f);
+        glUniform1f(glGetUniformLocation(program, "useTexture"), 0f);
+        glUniform4f(glGetUniformLocation(program, "tint"), 1f, .85f, .1f, 1f);
+        glDrawArrays(GL_LINES, 0, outline.floats / 6);
+        glUniform1f(glGetUniformLocation(program, "useTexture"), 1f);
+        glEnable(GL_CULL_FACE);
+        outline.free();
+    }
+
+    private static final class NativeMesh {
+        private long address;
+        private int capacity;
+        private int floats;
+
+        private NativeMesh(int initialFloats) {
+            capacity = Math.max(64, initialFloats);
+            address = nmemAlloc(capacity * 4L);
+        }
+
+        private void put(float x, float y, float z, float u, float v, float light) {
+            ensure(6);
+            long at = address + floats * 4L;
+            memPutFloat(at, x); memPutFloat(at + 4, y); memPutFloat(at + 8, z);
+            memPutFloat(at + 12, u); memPutFloat(at + 16, v); memPutFloat(at + 20, light);
+            floats += 6;
+        }
+
+        private void ensure(int count) {
+            if (floats + count <= capacity) return;
+            while (floats + count > capacity) capacity *= 2;
+            address = nmemRealloc(address, capacity * 4L);
+        }
+
+        private void free() {
+            nmemFree(address);
+            address = 0;
+        }
+    }
+
+    private void cube(NativeMesh b, int x, int y, int z, int type) {
         float[][] p={{0,0,0},{1,0,0},{1,1,0},{0,1,0},{0,0,1},{1,0,1},{1,1,1},{0,1,1}};
         int[][] f={{0,1,2,2,3,0},{5,4,7,7,6,5},{4,0,3,3,7,4},{1,5,6,6,2,1},{3,2,6,6,7,3},{4,5,1,1,0,4}};
         for (int face = 0; face < f.length; face++) texturedFace(b, x, y, z, type, face, 1f);
     }
 
-    private void visibleCube(FloatBuffer b, int x, int y, int z, int type) {
+    private void visibleCube(NativeMesh b, int x, int y, int z, int type) {
         if (world.get(x, y + 1, z) == 0) texturedFace(b, x, y, z, type, 0, .98f);
         if (world.get(x, y - 1, z) == 0) texturedFace(b, x, y, z, type, 1, .56f);
         if (world.get(x - 1, y, z) == 0) texturedFace(b, x, y, z, type, 2, .72f);
@@ -372,7 +431,7 @@ final class Game {
         if (world.get(x, y, z - 1) == 0) texturedFace(b, x, y, z, type, 5, .68f);
     }
 
-    private void texturedFace(FloatBuffer b, int x, int y, int z, int type, int face, float faceLight) {
+    private void texturedFace(NativeMesh b, int x, int y, int z, int type, int face, float faceLight) {
         int[][] f={{3,7,6,6,2,3},{0,1,5,5,4,0},{0,4,7,7,3,0},{1,2,6,6,5,1},{4,5,6,6,7,4},{0,3,2,2,1,0}};
         float[][] p={{0,0,0},{1,0,0},{1,1,0},{0,1,0},{0,0,1},{1,0,1},{1,1,1},{0,1,1}};
         int tile = tileFor(type, face);
@@ -380,7 +439,7 @@ final class Game {
             float u = (tile * 16f + textureU(p[i], face) * 15f + .5f) / TextureGenerator.width();
             float v = (textureV(p[i], face) * 15f + .5f) / 16f;
             float ao = ambientOcclusion(x, y, z, face, p[i]);
-            b.put(x+p[i][0]).put(y+p[i][1]).put(z+p[i][2]).put(u).put(v).put(faceLight * ao);
+            b.put(x+p[i][0], y+p[i][1], z+p[i][2], u, v, faceLight * ao);
         }
 
     }
@@ -457,7 +516,7 @@ final class Game {
 
     private static int createProgram() {
         int vs=shader(GL_VERTEX_SHADER,"#version 120\nattribute vec3 position; attribute vec2 texCoord; attribute float light; varying vec2 vTexCoord; varying float vLight; uniform mat4 matrix; void main(){gl_Position=matrix*vec4(position,1.0);vTexCoord=texCoord;vLight=light;}");
-        int fs=shader(GL_FRAGMENT_SHADER,"#version 120\nuniform sampler2D atlas; varying vec2 vTexCoord; varying float vLight; void main(){gl_FragColor=texture2D(atlas,vTexCoord)*vLight;}");
+        int fs=shader(GL_FRAGMENT_SHADER,"#version 120\nuniform sampler2D atlas; uniform float useTexture; uniform vec4 tint; varying vec2 vTexCoord; varying float vLight; void main(){gl_FragColor=useTexture > 0.5 ? texture2D(atlas,vTexCoord)*vLight : tint;}");
         int p=glCreateProgram();glAttachShader(p,vs);glAttachShader(p,fs);glLinkProgram(p);glDeleteShader(vs);glDeleteShader(fs);return p;
     }
 
@@ -468,7 +527,9 @@ final class Game {
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, TextureGenerator.width(), 16, 0, GL_RGBA, GL_UNSIGNED_BYTE, TextureGenerator.pixels());
+        long pixels = TextureGenerator.pixels();
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, TextureGenerator.width(), 16, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+        nmemFree(pixels);
         return id;
     }
     private static int shader(int type,String source){int s=glCreateShader(type);glShaderSource(s,source);glCompileShader(s);if(glGetShaderi(s,GL_COMPILE_STATUS)==GL_FALSE)throw new IllegalStateException(glGetShaderInfoLog(s));return s;}

@@ -1,9 +1,11 @@
 package com.steelswing.voxelsnake;
 
 import java.awt.image.BufferedImage;
-import java.nio.ByteBuffer;
-import org.lwjgl.BufferUtils;
 import java.util.Random;
+
+import static org.lwjgl.system.MemoryUtil.memPutByte;
+import static org.lwjgl.system.MemoryUtil.nmemAlloc;
+import static org.lwjgl.system.MemoryUtil.nmemFree;
 
 /** Generates a noisy, layered pixel atlas using the reference project's approach. */
 final class TextureGenerator {
@@ -32,17 +34,19 @@ final class TextureGenerator {
         return TILE * BASE.length;
     }
 
-    static ByteBuffer pixels() {
+    static long pixels() {
         BufferedImage image = atlas();
-        ByteBuffer pixels = BufferUtils.createByteBuffer(image.getWidth() * image.getHeight() * 4);
+        long pixels = nmemAlloc((long) image.getWidth() * image.getHeight() * 4L);
+        long at = pixels;
         for (int y = image.getHeight() - 1; y >= 0; y--) {
             for (int x = 0; x < image.getWidth(); x++) {
                 int color = image.getRGB(x, y);
-                pixels.put((byte) (color >> 16)).put((byte) (color >> 8))
-                        .put((byte) color).put((byte) 0xff);
+                memPutByte(at++, (byte) (color >> 16));
+                memPutByte(at++, (byte) (color >> 8));
+                memPutByte(at++, (byte) color);
+                memPutByte(at++, (byte) 0xff);
             }
         }
-        pixels.flip();
         return pixels;
     }
 
