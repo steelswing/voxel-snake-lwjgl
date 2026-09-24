@@ -11,19 +11,21 @@ Minecraft-like 3D voxel snake game written in Java 17 with LWJGL 3 and Gradle.
 
 ## Run
 
-Use the Gradle wrapper if it is present, otherwise install Gradle 8+:
+The repository includes a Gradle wrapper, so a separate Gradle installation is not required:
 
 ```bash
-gradle run
+./gradlew run
 ```
 
 For a distributable application directory:
 
 ```bash
-gradle installDist
+./gradlew installDist
 ```
 
 The executable is then under `build/install/voxel-snake/bin/`.
+
+On Windows, use `gradlew.bat` instead of `./gradlew`.
 
 ## Controls
 
