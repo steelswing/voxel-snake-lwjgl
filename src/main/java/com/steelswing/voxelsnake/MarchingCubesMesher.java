@@ -286,7 +286,7 @@ final class MarchingCubesMesher {
         int cubeIndex = 0;
         for (int i = 0; i < 8; i++) {
             float[] corner = CORNERS[i];
-            values[i] = world.get(x + (int) corner[0], y + (int) corner[1], z + (int) corner[2]) == 0 ? 0f : 1f;
+            values[i] = world.get(x + (int) corner[0], y + (int) corner[1], z + (int) corner[2]) == 0 ? 1f : 0f;
             if (values[i] < 0.5f) cubeIndex |= 1 << i;
         }
         int[] triangles = TRIANGLE_TABLE[cubeIndex];
@@ -324,8 +324,27 @@ final class MarchingCubesMesher {
             float gz = sample(world, vertex[0], vertex[1], vertex[2] + 0.01f) - sample(world, vertex[0], vertex[1], vertex[2] - 0.01f);
             float gl = (float) Math.sqrt(gx * gx + gy * gy + gz * gz);
             if (gl > 0.00001f) { gx /= gl; gy /= gl; gz /= gl; } else { gx = nx; gy = ny; gz = nz; }
-            float u = vertex[0] * 0.0625f;
-            float v = vertex[2] * 0.0625f;
+            float absX = Math.abs(gx);
+            float absY = Math.abs(gy);
+            float absZ = Math.abs(gz);
+            float textureU;
+            float textureV;
+            int section;
+            if (absY >= absX && absY >= absZ) {
+                textureU = vertex[0] - (float) Math.floor(vertex[0]);
+                textureV = vertex[2] - (float) Math.floor(vertex[2]);
+                section = gy >= 0 ? 0 : 2;
+            } else if (absX >= absZ) {
+                textureU = vertex[2] - (float) Math.floor(vertex[2]);
+                textureV = vertex[1] - (float) Math.floor(vertex[1]);
+                section = 1;
+            } else {
+                textureU = vertex[0] - (float) Math.floor(vertex[0]);
+                textureV = vertex[1] - (float) Math.floor(vertex[1]);
+                section = 1;
+            }
+            float u = (textureU * 15f + .5f) / TextureGenerator.width();
+            float v = ((2 - section) * 16f + textureV * 15f + .5f) / TextureGenerator.height();
             mesh.put(vertex[0], vertex[1], vertex[2], gx, gy, gz, u, v, 1f);
         }
     }
@@ -344,7 +363,7 @@ final class MarchingCubesMesher {
                     float weight = (ix == 0 ? 1f - tx : tx)
                             * (iy == 0 ? 1f - ty : ty)
                             * (iz == 0 ? 1f - tz : tz);
-                    value += weight * (world.get(baseX + ix, baseY + iy, baseZ + iz) == 0 ? 0f : 1f);
+                    value += weight * (world.get(baseX + ix, baseY + iy, baseZ + iz) == 0 ? 1f : 0f);
                 }
             }
         }
