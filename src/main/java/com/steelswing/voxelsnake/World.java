@@ -20,6 +20,7 @@ final class World {
     private final long seed;
     private final Map<Long, Chunk> chunks = new HashMap<>();
     private final Map<Long, byte[]> lightMaps = new HashMap<>();
+    private final Set<Long> lamps = new HashSet<>();
     private final Set<Long> dirtyChunks = new HashSet<>();
     private long revision;
 
@@ -46,6 +47,9 @@ final class World {
             memPutByte(address, type);
             revision++;
             lightMaps.clear();
+            long blockKey = blockKey(x, y, z);
+            if (type == 6) lamps.add(blockKey);
+            else lamps.remove(blockKey);
             markDirty(x, y, z);
             return true;
         }
@@ -134,6 +138,7 @@ final class World {
         for (Chunk chunk : chunks.values()) nmemFree(chunk.address);
         chunks.clear();
         lightMaps.clear();
+        lamps.clear();
     }
 
     synchronized long revision() {
@@ -151,7 +156,11 @@ final class World {
         int chunkX = Math.floorDiv(Math.floorMod(x, SIZE), CHUNK_SIZE);
         int chunkZ = Math.floorDiv(Math.floorMod(z, SIZE), CHUNK_SIZE);
         long key = renderChunkKey(chunkX, chunkZ);
-        byte[] map = lightMaps.computeIfAbsent(key, ignored -> buildLightMap(chunkX, chunkZ));
+        byte[] map = lightMaps.get(key);
+        if (map == null) {
+            map = buildLightMap(chunkX, chunkZ);
+            lightMaps.put(key, map);
+        }
         int localX = Math.floorMod(x, CHUNK_SIZE);
         int localZ = Math.floorMod(z, CHUNK_SIZE);
         int level = map[localX | (y << 5) | (localZ << 12)] & 0xFF;
@@ -166,23 +175,26 @@ final class World {
         int startZ = chunkZ * CHUNK_SIZE;
         for (int localX = 0; localX < CHUNK_SIZE; localX++) {
             for (int localZ = 0; localZ < CHUNK_SIZE; localZ++) {
-                int index = localX | ((HEIGHT - 1) << 5) | (localZ << 12);
-                map[index] = 15;
-                queue.add(index);
-            }
-        }
-        for (int x = startX; x < startX + CHUNK_SIZE; x++) {
-            for (int y = 0; y < HEIGHT; y++) {
-                for (int z = startZ; z < startZ + CHUNK_SIZE; z++) {
-                    if (get(x, y, z) == 6) {
-                        int index = (x - startX) | (y << 5) | ((z - startZ) << 12);
-                        if ((map[index] & 0xFF) < 14) {
-                            map[index] = 14;
-                            queue.add(index);
-                        }
+                int sunlight = 15;
+                for (int y = HEIGHT - 1; y >= 0; y--) {
+                    int index = localX | (y << 5) | (localZ << 12);
+                    if (get(startX + localX, y, startZ + localZ) != 0) {
+                        sunlight = Math.max(0, sunlight - 3);
                     }
+                    map[index] = (byte) sunlight;
+                    if (sunlight > 1) queue.add(index);
                 }
             }
+        }
+        for (long lamp : lamps) {
+            int lampX = (int) (lamp >> 42);
+            int lampY = (int) ((lamp >> 21) & 0x1FFFFF);
+            int lampZ = (int) (lamp & 0x1FFFFF);
+            if (lampX < startX || lampX >= startX + CHUNK_SIZE
+                    || lampZ < startZ || lampZ >= startZ + CHUNK_SIZE) continue;
+            int index = (lampX - startX) | (lampY << 5) | ((lampZ - startZ) << 12);
+            map[index] = 14;
+            queue.add(index);
         }
         while (!queue.isEmpty()) {
             int index = queue.removeFirst();
@@ -234,6 +246,12 @@ final class World {
 
     static long renderChunkKey(int x, int z) {
         return ((long) x << 32) ^ (z & 0xffffffffL);
+    }
+
+    private static long blockKey(int x, int y, int z) {
+        return ((long) (x & 0x1FFFFF) << 42)
+                | ((long) (y & 0x1FFFFF) << 21)
+                | (z & 0x1FFFFF);
     }
 
     private static int index(int x, int y, int z) {
