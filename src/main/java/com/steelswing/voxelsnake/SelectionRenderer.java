@@ -16,6 +16,9 @@ import static org.lwjgl.opengl.GL15C.nglBufferData;
 import static org.lwjgl.opengl.GL20C.glGetUniformLocation;
 import static org.lwjgl.opengl.GL20C.glUniform1f;
 import static org.lwjgl.opengl.GL20C.glUniform4f;
+import static org.lwjgl.opengl.GL20C.glEnableVertexAttribArray;
+import static org.lwjgl.opengl.GL20C.glVertexAttribPointer;
+import static org.lwjgl.opengl.GL11C.GL_FLOAT;
 
 final class SelectionRenderer {
     private static final int[][] EDGES = {
@@ -26,8 +29,8 @@ final class SelectionRenderer {
 
     private final int vbo = org.lwjgl.opengl.GL15C.glGenBuffers();
 
-    void render(int program, int[] block) {
-        float x = block[0], y = block[1], z = block[2], e = 0.003f;
+    void render(int program, int positionAttribute, int texCoordAttribute, int lightAttribute, int[] block) {
+        float x = block[0], y = block[1], z = block[2], e = 0.002f;
         float[][] c = {
                 {x - e, y - e, z - e}, {x + 1 + e, y - e, z - e},
                 {x + 1 + e, y + 1 + e, z - e}, {x - e, y + 1 + e, z - e},
@@ -42,6 +45,12 @@ final class SelectionRenderer {
         }
         glBindBuffer(GL_ARRAY_BUFFER, vbo);
         nglBufferData(GL_ARRAY_BUFFER, mesh.floats * 4L, mesh.address, GL_STREAM_DRAW);
+        glEnableVertexAttribArray(positionAttribute);
+        glEnableVertexAttribArray(texCoordAttribute);
+        glEnableVertexAttribArray(lightAttribute);
+        glVertexAttribPointer(positionAttribute, 3, GL_FLOAT, false, 24, 0);
+        glVertexAttribPointer(texCoordAttribute, 2, GL_FLOAT, false, 24, 12);
+        glVertexAttribPointer(lightAttribute, 1, GL_FLOAT, false, 24, 20);
         glDisable(GL_CULL_FACE);
         glEnable(GL_LINE_SMOOTH);
         glEnable(GL_POLYGON_OFFSET_LINE);

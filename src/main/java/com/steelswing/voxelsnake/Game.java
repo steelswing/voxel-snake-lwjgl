@@ -144,15 +144,15 @@ final class Game {
     private void addSnake(int x, int z) { snake.add(new int[]{x, world.surface(x, z) + 1, z}); }
 
     private void editBlock(boolean add) {
-        int[] hit = raycast();
+        RaycastHit hit = raycast();
         if (hit == null) return;
         if (!add) {
-            world.set(hit[0], hit[1], hit[2], (byte) 0);
+            world.set(hit.x, hit.y, hit.z, (byte) 0);
             return;
         }
-        int x = hit[0] + hit[3];
-        int y = hit[1] + hit[4];
-        int z = hit[2] + hit[5];
+        int x = hit.x + hit.normalX;
+        int y = hit.y + hit.normalY;
+        int z = hit.z + hit.normalZ;
         if (world.get(x, y, z) == 0) world.set(x, y, z, (byte) selectedBlock);
     }
 
@@ -184,27 +184,64 @@ final class Game {
         if (keys[GLFW_KEY_LEFT_CONTROL]) cameraY -= speed * dt;
     }
 
-    private int[] raycast() {
-        float forwardX = (float) (Math.cos(cameraPitch) * Math.cos(cameraYaw));
-        float forwardY = (float) Math.sin(cameraPitch);
-        float forwardZ = (float) (Math.cos(cameraPitch) * Math.sin(cameraYaw));
-        int previousX = Integer.MIN_VALUE;
-        int previousY = Integer.MIN_VALUE;
-        int previousZ = Integer.MIN_VALUE;
-        for (float distance = .2f; distance < 12f; distance += .08f) {
-            int x = (int) Math.floor(cameraX + forwardX * distance);
-            int y = (int) Math.floor(cameraY + forwardY * distance);
-            int z = (int) Math.floor(cameraZ + forwardZ * distance);
-            if (x == previousX && y == previousY && z == previousZ) continue;
+    private RaycastHit raycast() {
+        float directionX = (float) (Math.cos(cameraPitch) * Math.cos(cameraYaw));
+        float directionY = (float) Math.sin(cameraPitch);
+        float directionZ = (float) (Math.cos(cameraPitch) * Math.sin(cameraYaw));
+        int x = (int) Math.floor(cameraX);
+        int y = (int) Math.floor(cameraY);
+        int z = (int) Math.floor(cameraZ);
+        int stepX = Float.compare(directionX, 0);
+        int stepY = Float.compare(directionY, 0);
+        int stepZ = Float.compare(directionZ, 0);
+        double tMaxX = nextBoundary(cameraX, directionX, x, stepX);
+        double tMaxY = nextBoundary(cameraY, directionY, y, stepY);
+        double tMaxZ = nextBoundary(cameraZ, directionZ, z, stepZ);
+        double tDeltaX = delta(directionX);
+        double tDeltaY = delta(directionY);
+        double tDeltaZ = delta(directionZ);
+        int normalX = 0;
+        int normalY = 0;
+        int normalZ = 0;
+
+        for (double distance = 0; distance <= 12.0; ) {
             if (world.get(x, y, z) != 0) {
-                if (previousX == Integer.MIN_VALUE) return new int[]{x, y, z, 0, 1, 0};
-                return new int[]{x, y, z, previousX - x, previousY - y, previousZ - z};
+                return new RaycastHit(x, y, z, normalX, normalY, normalZ);
             }
-            previousX = x;
-            previousY = y;
-            previousZ = z;
+            if (tMaxX < tMaxY && tMaxX < tMaxZ) {
+                distance = tMaxX;
+                x += stepX;
+                normalX = -stepX;
+                normalY = 0;
+                normalZ = 0;
+                tMaxX += tDeltaX;
+            } else if (tMaxY < tMaxZ) {
+                distance = tMaxY;
+                y += stepY;
+                normalX = 0;
+                normalY = -stepY;
+                normalZ = 0;
+                tMaxY += tDeltaY;
+            } else {
+                distance = tMaxZ;
+                z += stepZ;
+                normalX = 0;
+                normalY = 0;
+                normalZ = -stepZ;
+                tMaxZ += tDeltaZ;
+            }
         }
         return null;
+    }
+
+    private static double nextBoundary(float origin, float direction, int cell, int step) {
+        if (step == 0) return Double.POSITIVE_INFINITY;
+        double boundary = step > 0 ? cell + 1.0 : cell;
+        return (boundary - origin) / direction;
+    }
+
+    private static double delta(float direction) {
+        return direction == 0 ? Double.POSITIVE_INFINITY : Math.abs(1.0 / direction);
     }
 
     private void moveSnake() {
@@ -321,8 +358,8 @@ final class Game {
         nglBufferData(GL_ARRAY_BUFFER, entities.floats * 4L, entities.address, GL_STREAM_DRAW);
         glDrawArrays(GL_TRIANGLES, 0, entities.floats / 6);
         entities.free();
-        int[] hit = editMode ? raycast() : null;
-        if (hit != null) selectionRenderer.render(program, hit);
+        RaycastHit hit = editMode ? raycast() : null;
+        if (hit != null) selectionRenderer.render(program, position, texCoord, light, hit.block());
     }
 
     private ChunkMesh chunkMesh(int chunkX, int chunkZ) {
