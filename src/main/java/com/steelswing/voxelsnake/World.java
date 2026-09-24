@@ -24,7 +24,7 @@ final class World {
         this.seed = seed;
     }
 
-    byte get(int x, int y, int z) {
+    synchronized byte get(int x, int y, int z) {
         if (y < 0 || y >= HEIGHT) return 0;
         x = Math.floorMod(x, SIZE);
         z = Math.floorMod(z, SIZE);
@@ -33,7 +33,7 @@ final class World {
         return memGetByte(chunk.address + index(x, y, z));
     }
 
-    boolean set(int x, int y, int z, byte type) {
+    synchronized boolean set(int x, int y, int z, byte type) {
         if (y < 0 || y >= HEIGHT) return false;
         x = Math.floorMod(x, SIZE);
         z = Math.floorMod(z, SIZE);

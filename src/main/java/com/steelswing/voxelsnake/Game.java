@@ -8,6 +8,10 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 import static org.lwjgl.glfw.GLFW.*;
 import static org.lwjgl.opengl.GL11C.*;
@@ -50,6 +54,12 @@ final class Game {
     private boolean firstMouse = true;
     private int selectedBlock = 2;
     private final Map<Long, ChunkMesh> meshes = new HashMap<>();
+    private final Map<Long, Future<ChunkBuild>> pendingMeshes = new HashMap<>();
+    private final ExecutorService meshExecutor = Executors.newFixedThreadPool(
+            Math.max(1, Runtime.getRuntime().availableProcessors() - 1));
+    private boolean snakeDead;
+    private int pendingDx = 1;
+    private int pendingDz;
 
     void run() {
         init();
@@ -58,6 +68,9 @@ final class Game {
         } finally {
             for (ChunkMesh mesh : meshes.values()) glDeleteBuffers(mesh.vbo);
             meshes.clear();
+            for (Future<ChunkBuild> pending : pendingMeshes.values()) pending.cancel(true);
+            pendingMeshes.clear();
+            meshExecutor.shutdownNow();
             world.close();
             selectionRenderer.free();
             if (window != NULL) glfwDestroyWindow(window);
@@ -109,10 +122,10 @@ final class Game {
                 glfwSetInputMode(window, GLFW_CURSOR, editMode ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
             }
             if (!editMode) {
-                if (key == GLFW_KEY_W) { dx = 0; dz = -1; }
-                if (key == GLFW_KEY_S) { dx = 0; dz = 1; }
-                if (key == GLFW_KEY_A) { dx = -1; dz = 0; }
-                if (key == GLFW_KEY_D) { dx = 1; dz = 0; }
+                if (key == GLFW_KEY_W) turn(0, -1);
+                if (key == GLFW_KEY_S) turn(0, 1);
+                if (key == GLFW_KEY_A) turn(-1, 0);
+                if (key == GLFW_KEY_D) turn(1, 0);
             } else if (key == GLFW_KEY_Q || key == GLFW_KEY_E) {
                 editBlock(key == GLFW_KEY_E);
             } else if (key >= GLFW_KEY_1 && key <= GLFW_KEY_5) {
@@ -143,6 +156,12 @@ final class Game {
 
     private void addSnake(int x, int z) { snake.add(new int[]{x, world.surface(x, z) + 1, z}); }
 
+    private void turn(int nextDx, int nextDz) {
+        if (nextDx == -dx && nextDz == -dz) return;
+        pendingDx = nextDx;
+        pendingDz = nextDz;
+    }
+
     private void editBlock(boolean add) {
         RaycastHit hit = raycast();
         if (hit == null) return;
@@ -161,7 +180,11 @@ final class Game {
             double now = glfwGetTime();
             float frameTime = (float) Math.min(.1, Math.max(0, now - lastFrameTime));
             lastFrameTime = now;
-            if (!editMode && now >= nextStep) { moveSnake(); nextStep = now + .22; }
+            if (!editMode && now >= nextStep) {
+                moveSnake();
+                nextStep += .22;
+                if (nextStep < now) nextStep = now + .22;
+            }
             if (editMode) updateFreeCamera(frameTime);
             render(frameTime);
             glfwSwapBuffers(window);
@@ -245,10 +268,19 @@ final class Game {
     }
 
     private void moveSnake() {
+        if (snakeDead) return;
+        dx = pendingDx;
+        dz = pendingDz;
         int[] head = snake.get(0);
         int x = Math.floorMod(head[0] + dx, World.SIZE);
         int z = Math.floorMod(head[2] + dz, World.SIZE);
         int y = world.surface(x, z) + 1;
+        for (int[] part : snake) {
+            if (part[0] == x && part[1] == y && part[2] == z) {
+                snakeDead = true;
+                return;
+            }
+        }
         snake.add(0, new int[]{x, y, z});
         if (apple[0] == x && apple[1] == y && apple[2] == z) {
             snakeLength++;
@@ -282,7 +314,7 @@ final class Game {
         int[] height = new int[1];
         glfwGetFramebufferSize(window, size, height);
         glViewport(0, 0, size[0], height[0]);
-        glClearColor(.42f, .68f, .92f, 1);
+        glClearColor(.56f, .72f, .88f, 1);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         int[] head = snake.get(0);
         float ex;
@@ -322,6 +354,8 @@ final class Game {
         for (long dirtyKey : world.consumeDirtyChunks()) {
             ChunkMesh dirtyMesh = meshes.remove(dirtyKey);
             if (dirtyMesh != null) glDeleteBuffers(dirtyMesh.vbo);
+            Future<ChunkBuild> dirtyBuild = pendingMeshes.remove(dirtyKey);
+            if (dirtyBuild != null) dirtyBuild.cancel(true);
         }
         glUseProgram(program);
         glUniform1f(glGetUniformLocation(program, "useTexture"), 1f);
@@ -336,14 +370,21 @@ final class Game {
         glEnableVertexAttribArray(light); glVertexAttribPointer(light, 1, GL_FLOAT, false, 24, 20);
         glUniformMatrix4fv(glGetUniformLocation(program, "matrix"), false,
                 matrix(ex, ey, ez, tx, ty, tz, size[0] / (float) height[0]));
+        glUniform3f(glGetUniformLocation(program, "fogOrigin"), ex, ey, ez);
+        glUniform1f(glGetUniformLocation(program, "fogStart"), 72f);
+        glUniform1f(glGetUniformLocation(program, "fogEnd"), 256f);
         int centerX = editMode ? (int) cameraX : head[0];
         int centerZ = editMode ? (int) cameraZ : head[2];
         int centerChunkX = Math.floorDiv(centerX, World.CHUNK_SIZE);
         int centerChunkZ = Math.floorDiv(centerZ, World.CHUNK_SIZE);
-        int chunkRadius = 2;
+        int chunkRadius = 8;
         for (int chunkX = centerChunkX - chunkRadius; chunkX <= centerChunkX + chunkRadius; chunkX++) {
             for (int chunkZ = centerChunkZ - chunkRadius; chunkZ <= centerChunkZ + chunkRadius; chunkZ++) {
+                int offsetX = chunkX - centerChunkX;
+                int offsetZ = chunkZ - centerChunkZ;
+                if (offsetX * offsetX + offsetZ * offsetZ > chunkRadius * chunkRadius) continue;
                 ChunkMesh mesh = chunkMesh(chunkX, chunkZ);
+                if (mesh == null) continue;
                 glBindBuffer(GL_ARRAY_BUFFER, mesh.vbo);
                 glVertexAttribPointer(position, 3, GL_FLOAT, false, 24, 0);
                 glVertexAttribPointer(texCoord, 2, GL_FLOAT, false, 24, 12);
@@ -363,11 +404,35 @@ final class Game {
     }
 
     private ChunkMesh chunkMesh(int chunkX, int chunkZ) {
-        int wrappedX = Math.floorMod(chunkX, World.CHUNK_COUNT);
-        int wrappedZ = Math.floorMod(chunkZ, World.CHUNK_COUNT);
         long key = World.renderChunkKey(chunkX, chunkZ);
         ChunkMesh cached = meshes.get(key);
         if (cached != null) return cached;
+        Future<ChunkBuild> pending = pendingMeshes.get(key);
+        if (pending == null) {
+            pending = meshExecutor.submit(() -> buildChunk(chunkX, chunkZ));
+            pendingMeshes.put(key, pending);
+            return null;
+        }
+        if (!pending.isDone()) return null;
+        pendingMeshes.remove(key);
+        try {
+            ChunkBuild build = pending.get();
+            int vbo = glGenBuffers();
+            glBindBuffer(GL_ARRAY_BUFFER, vbo);
+            nglBufferData(GL_ARRAY_BUFFER, build.mesh.floats * 4L, build.mesh.address, GL_STATIC_DRAW);
+            ChunkMesh mesh = new ChunkMesh(vbo, build.mesh.floats / 6);
+            build.mesh.free();
+            meshes.put(key, mesh);
+            return mesh;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return null;
+        } catch (ExecutionException e) {
+            throw new IllegalStateException("Chunk mesh build failed", e.getCause());
+        }
+    }
+
+    private ChunkBuild buildChunk(int chunkX, int chunkZ) {
         NativeMesh data = new NativeMesh(262144);
         int startX = chunkX * World.CHUNK_SIZE;
         int startZ = chunkZ * World.CHUNK_SIZE;
@@ -379,13 +444,7 @@ final class Game {
                 }
             }
         }
-        int vbo = glGenBuffers();
-        glBindBuffer(GL_ARRAY_BUFFER, vbo);
-        nglBufferData(GL_ARRAY_BUFFER, data.floats * 4L, data.address, GL_STATIC_DRAW);
-        ChunkMesh mesh = new ChunkMesh(vbo, data.floats / 6);
-        data.free();
-        meshes.put(key, mesh);
-        return mesh;
+        return new ChunkBuild(data);
     }
 
     private static final class ChunkMesh {
@@ -395,6 +454,15 @@ final class Game {
         private ChunkMesh(int vbo, int vertices) {
             this.vbo = vbo;
             this.vertices = vertices;
+        }
+
+    }
+
+    private static final class ChunkBuild {
+        private final NativeMesh mesh;
+
+        private ChunkBuild(NativeMesh mesh) {
+            this.mesh = mesh;
         }
     }
 
@@ -492,8 +560,8 @@ final class Game {
     private static float dot(float[] a,float x,float y,float z){return a[0]*x+a[1]*y+a[2]*z;}
 
     private static int createProgram() {
-        int vs=shader(GL_VERTEX_SHADER,"#version 120\nattribute vec3 position; attribute vec2 texCoord; attribute float light; varying vec2 vTexCoord; varying float vLight; uniform mat4 matrix; void main(){gl_Position=matrix*vec4(position,1.0);vTexCoord=texCoord;vLight=light;}");
-        int fs=shader(GL_FRAGMENT_SHADER,"#version 120\nuniform sampler2D atlas; uniform float useTexture; uniform vec4 tint; varying vec2 vTexCoord; varying float vLight; void main(){gl_FragColor=useTexture > 0.5 ? texture2D(atlas,vTexCoord)*vLight : tint;}");
+        int vs=shader(GL_VERTEX_SHADER,"#version 120\nattribute vec3 position; attribute vec2 texCoord; attribute float light; varying vec2 vTexCoord; varying float vLight; varying float vDistance; uniform mat4 matrix; uniform vec3 fogOrigin; void main(){gl_Position=matrix*vec4(position,1.0);vTexCoord=texCoord;vLight=light;vDistance=distance(position,fogOrigin);}");
+        int fs=shader(GL_FRAGMENT_SHADER,"#version 120\nuniform sampler2D atlas; uniform float useTexture; uniform vec4 tint; uniform float fogStart; uniform float fogEnd; varying vec2 vTexCoord; varying float vLight; varying float vDistance; void main(){vec4 color=useTexture > 0.5 ? texture2D(atlas,vTexCoord)*vLight : tint; float fog=clamp((vDistance-fogStart)/(fogEnd-fogStart),0.0,1.0); color.rgb=mix(color.rgb,vec3(0.56,0.72,0.88),fog); gl_FragColor=color;}");
         int p=glCreateProgram();glAttachShader(p,vs);glAttachShader(p,fs);glLinkProgram(p);glDeleteShader(vs);glDeleteShader(fs);return p;
     }
 
