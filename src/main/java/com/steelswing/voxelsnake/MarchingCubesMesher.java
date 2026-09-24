@@ -348,23 +348,32 @@ final class MarchingCubesMesher {
             float textureV;
             int section;
             if (absY >= absX && absY >= absZ) {
-                textureU = vertex[0] - (float) Math.floor(vertex[0]);
-                textureV = vertex[2] - (float) Math.floor(vertex[2]);
+                textureU = fract(vertex[0]);
+                textureV = fract(vertex[2]);
                 section = gy >= 0 ? 0 : 2;
             } else if (absX >= absZ) {
-                textureU = vertex[2] - (float) Math.floor(vertex[2]);
-                textureV = vertex[1] - (float) Math.floor(vertex[1]);
+                textureU = fract(vertex[2]);
+                textureV = fract(vertex[1]);
                 section = 1;
             } else {
-                textureU = vertex[0] - (float) Math.floor(vertex[0]);
-                textureV = vertex[1] - (float) Math.floor(vertex[1]);
+                textureU = fract(vertex[0]);
+                textureV = fract(vertex[1]);
                 section = 1;
             }
             int tile = Math.max(0, Math.min(7, material - 1));
-            float u = (tile * 16f + textureU * 15f + .5f) / TextureGenerator.width();
-            float v = ((2 - section) * 16f + textureV * 15f + .5f) / TextureGenerator.height();
+            float u = atlasCoordinate(tile * 16, textureU, TextureGenerator.width());
+            float v = atlasCoordinate((2 - section) * 16, textureV, TextureGenerator.height());
             mesh.put(vertex[0], vertex[1], vertex[2], gx, gy, gz, u, v, 1f);
         }
+    }
+
+    private static float fract(float value) {
+        return value - (float) Math.floor(value);
+    }
+
+    private static float atlasCoordinate(int tileOrigin, float local, int atlasSize) {
+        float texel = tileOrigin + .5f + Math.max(0f, Math.min(1f, local)) * 15f;
+        return texel / atlasSize;
     }
 
     private static float sample(World world, float x, float y, float z) {
