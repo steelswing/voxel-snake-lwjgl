@@ -11,12 +11,14 @@ import java.util.Random;
 
 import static org.lwjgl.glfw.GLFW.*;
 import static org.lwjgl.opengl.GL11C.*;
+import static org.lwjgl.opengl.GL12C.*;
 import static org.lwjgl.opengl.GL20C.*;
 import static org.lwjgl.system.MemoryUtil.NULL;
 
 final class Game {
     private long window;
     private int program;
+    private int texture;
     private final World world = new World(0x5EEDL);
     private final List<int[]> snake = new ArrayList<>();
     private final Random random = new Random(0xA11CE);
@@ -35,6 +37,7 @@ final class Game {
     private double lastMouseX;
     private double lastMouseY;
     private boolean firstMouse = true;
+    private int selectedBlock = 2;
 
     void run() {
         init();
@@ -54,7 +57,10 @@ final class Game {
         glfwSwapInterval(1);
         GL.createCapabilities();
         glEnable(GL_DEPTH_TEST);
+        glEnable(GL_CULL_FACE);
+        glCullFace(GL_BACK);
         program = createProgram();
+        texture = createTexture();
         addSnake(16, 16);
         addSnake(15, 16);
         addSnake(14, 16);
@@ -80,6 +86,8 @@ final class Game {
                 if (key == GLFW_KEY_D) { dx = 1; dz = 0; }
             } else if (key == GLFW_KEY_Q || key == GLFW_KEY_E) {
                 editBlock(key == GLFW_KEY_E);
+            } else if (key >= GLFW_KEY_1 && key <= GLFW_KEY_5) {
+                selectedBlock = key - GLFW_KEY_0;
             }
         });
         glfwSetCursorPosCallback(window, (w, x, y) -> {
@@ -96,6 +104,12 @@ final class Game {
             lastMouseX = x;
             lastMouseY = y;
         });
+        glfwSetMouseButtonCallback(window, (w, button, action, mods) -> {
+            if (editMode && action == GLFW_PRESS) {
+                if (button == GLFW_MOUSE_BUTTON_LEFT) editBlock(false);
+                if (button == GLFW_MOUSE_BUTTON_RIGHT) editBlock(true);
+            }
+        });
     }
 
     private void addSnake(int x, int z) { snake.add(new int[]{x, world.surface(x, z) + 1, z}); }
@@ -110,7 +124,7 @@ final class Game {
         int x = hit[0] + hit[3];
         int y = hit[1] + hit[4];
         int z = hit[2] + hit[5];
-        if (world.get(x, y, z) == 0) world.set(x, y, z, (byte) 2);
+        if (world.get(x, y, z) == 0) world.set(x, y, z, (byte) selectedBlock);
     }
 
     private void loop() {
@@ -224,7 +238,7 @@ final class Game {
             ty = head[1] + .25f;
             tz = head[2] + .5f;
         }
-        FloatBuffer data = BufferUtils.createFloatBuffer((World.SIZE * World.HEIGHT * World.SIZE + snake.size()) * 36 * 6);
+        FloatBuffer data = BufferUtils.createFloatBuffer((World.SIZE * World.HEIGHT * World.SIZE + snake.size() + 1) * 36 * 6);
         for (int x = 0; x < World.SIZE; x++) for (int y = 0; y < World.HEIGHT; y++) for (int z = 0; z < World.SIZE; z++) {
             int type = world.get(x, y, z);
             if (type != 0) visibleCube(data, x, y, z, type);
@@ -236,39 +250,68 @@ final class Game {
         glBindBuffer(GL_ARRAY_BUFFER, vbo);
         glBufferData(GL_ARRAY_BUFFER, data, GL_STREAM_DRAW);
         glUseProgram(program);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, texture);
+        glUniform1i(glGetUniformLocation(program, "atlas"), 0);
         int position = glGetAttribLocation(program, "position");
-        int color = glGetAttribLocation(program, "color");
+        int texCoord = glGetAttribLocation(program, "texCoord");
+        int light = glGetAttribLocation(program, "light");
         glEnableVertexAttribArray(position); glVertexAttribPointer(position, 3, GL_FLOAT, false, 24, 0);
-        glEnableVertexAttribArray(color); glVertexAttribPointer(color, 3, GL_FLOAT, false, 24, 12);
+        glEnableVertexAttribArray(texCoord); glVertexAttribPointer(texCoord, 2, GL_FLOAT, false, 24, 12);
+        glEnableVertexAttribArray(light); glVertexAttribPointer(light, 1, GL_FLOAT, false, 24, 20);
         glUniformMatrix4fv(glGetUniformLocation(program, "matrix"), false,
                 matrix(ex, ey, ez, tx, ty, tz, size[0] / (float) height[0]));
         glDrawArrays(GL_TRIANGLES, 0, data.limit() / 6);
         glDeleteBuffers(vbo);
     }
 
-    private static void cube(FloatBuffer b, int x, int y, int z, int type) {
+    private void cube(FloatBuffer b, int x, int y, int z, int type) {
         float[][] p={{0,0,0},{1,0,0},{1,1,0},{0,1,0},{0,0,1},{1,0,1},{1,1,1},{0,1,1}};
         int[][] f={{0,1,2,2,3,0},{5,4,7,7,6,5},{4,0,3,3,7,4},{1,5,6,6,2,1},{3,2,6,6,7,3},{4,5,1,1,0,4}};
-        for (int face = 0; face < f.length; face++) {
-            float[] c = TextureGenerator.color(type, x, y, z, face);
-            for (int i : f[face]) b.put(x+p[i][0]).put(y+p[i][1]).put(z+p[i][2]).put(c[0]).put(c[1]).put(c[2]);
-        }
+        for (int face = 0; face < f.length; face++) texturedFace(b, x, y, z, type, face, 1f);
     }
 
     private void visibleCube(FloatBuffer b, int x, int y, int z, int type) {
-        if (world.get(x, y + 1, z) == 0) face(b, x, y, z, type, 0);
-        if (world.get(x, y - 1, z) == 0) face(b, x, y, z, type, 1);
-        if (world.get(x - 1, y, z) == 0) face(b, x, y, z, type, 2);
-        if (world.get(x + 1, y, z) == 0) face(b, x, y, z, type, 3);
-        if (world.get(x, y, z + 1) == 0) face(b, x, y, z, type, 4);
-        if (world.get(x, y, z - 1) == 0) face(b, x, y, z, type, 5);
+        if (world.get(x, y + 1, z) == 0) texturedFace(b, x, y, z, type, 0, .98f);
+        if (world.get(x, y - 1, z) == 0) texturedFace(b, x, y, z, type, 1, .56f);
+        if (world.get(x - 1, y, z) == 0) texturedFace(b, x, y, z, type, 2, .72f);
+        if (world.get(x + 1, y, z) == 0) texturedFace(b, x, y, z, type, 3, .84f);
+        if (world.get(x, y, z + 1) == 0) texturedFace(b, x, y, z, type, 4, .78f);
+        if (world.get(x, y, z - 1) == 0) texturedFace(b, x, y, z, type, 5, .68f);
     }
 
-    private static void face(FloatBuffer b, int x, int y, int z, int type, int face) {
+    private void texturedFace(FloatBuffer b, int x, int y, int z, int type, int face, float faceLight) {
         int[][] f={{3,2,6,6,7,3},{4,5,1,1,0,4},{4,0,3,3,7,4},{1,5,6,6,2,1},{5,4,7,7,6,5},{0,1,2,2,3,0}};
         float[][] p={{0,0,0},{1,0,0},{1,1,0},{0,1,0},{0,0,1},{1,0,1},{1,1,1},{0,1,1}};
-        float[] c = TextureGenerator.color(type, x, y, z, face);
-        for (int i : f[face]) b.put(x+p[i][0]).put(y+p[i][1]).put(z+p[i][2]).put(c[0]).put(c[1]).put(c[2]);
+        int tile = Math.floorMod(type - 1, 5);
+        for (int i : f[face]) {
+            float u = (tile * 16f + textureU(p[i], face) * 15f + .5f) / 80f;
+            float v = (textureV(p[i], face) * 15f + .5f) / 16f;
+            float ao = ambientOcclusion(x, y, z, face, p[i]);
+            b.put(x+p[i][0]).put(y+p[i][1]).put(z+p[i][2]).put(u).put(v).put(faceLight * ao);
+        }
+    }
+
+    private float ambientOcclusion(int x, int y, int z, int face, float[] point) {
+        int axisA = face == 0 || face == 1 ? (point[0] == 0 ? -1 : 1) : (face == 2 || face == 3 ? (point[1] == 0 ? -1 : 1) : (point[0] == 0 ? -1 : 1));
+        int axisB = face == 0 || face == 1 ? (point[2] == 0 ? -1 : 1) : (point[2] == 0 ? -1 : 1);
+        int nx = face == 2 ? -1 : face == 3 ? 1 : 0;
+        int ny = face == 1 ? -1 : face == 0 ? 1 : 0;
+        int nz = face == 5 ? -1 : face == 4 ? 1 : 0;
+        int ax = face == 2 || face == 3 ? 0 : axisA;
+        int ay = face == 0 || face == 1 ? 0 : (face == 2 || face == 3 ? axisA : axisA);
+        int az = face == 0 || face == 1 ? axisB : (face == 2 || face == 3 ? axisB : 0);
+        boolean sideA = world.get(x + nx + ax, y + ny + ay, z + nz + az) != 0;
+        boolean sideB = world.get(x + nx + (face == 0 || face == 1 ? 0 : axisB), y + ny + (face == 0 || face == 1 ? 0 : (face == 2 || face == 3 ? 0 : axisB)), z + nz + (face == 0 || face == 1 ? axisA : 0)) != 0;
+        return sideA && sideB ? .58f : 1f - (sideA || sideB ? .12f : 0f);
+    }
+
+    private static float textureU(float[] p, int face) {
+        return face <= 1 || face >= 4 ? p[0] : p[2];
+    }
+
+    private static float textureV(float[] p, int face) {
+        return face <= 1 ? p[2] : p[1];
     }
 
     private static float[] matrix(float ex,float ey,float ez,float tx,float ty,float tz,float aspect) {
@@ -287,9 +330,20 @@ final class Game {
     private static float dot(float[] a,float x,float y,float z){return a[0]*x+a[1]*y+a[2]*z;}
 
     private static int createProgram() {
-        int vs=shader(GL_VERTEX_SHADER,"#version 120\nattribute vec3 position; attribute vec3 color; varying vec3 vColor; uniform mat4 matrix; void main(){gl_Position=matrix*vec4(position,1.0);vColor=color;}");
-        int fs=shader(GL_FRAGMENT_SHADER,"#version 120\nvarying vec3 vColor; void main(){gl_FragColor=vec4(vColor,1.0);}");
+        int vs=shader(GL_VERTEX_SHADER,"#version 120\nattribute vec3 position; attribute vec2 texCoord; attribute float light; varying vec2 vTexCoord; varying float vLight; uniform mat4 matrix; void main(){gl_Position=matrix*vec4(position,1.0);vTexCoord=texCoord;vLight=light;}");
+        int fs=shader(GL_FRAGMENT_SHADER,"#version 120\nuniform sampler2D atlas; varying vec2 vTexCoord; varying float vLight; void main(){gl_FragColor=texture2D(atlas,vTexCoord)*vLight;}");
         int p=glCreateProgram();glAttachShader(p,vs);glAttachShader(p,fs);glLinkProgram(p);glDeleteShader(vs);glDeleteShader(fs);return p;
+    }
+
+    private static int createTexture() {
+        int id = glGenTextures();
+        glBindTexture(GL_TEXTURE_2D, id);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 80, 16, 0, GL_RGBA, GL_UNSIGNED_BYTE, TextureGenerator.pixels());
+        return id;
     }
     private static int shader(int type,String source){int s=glCreateShader(type);glShaderSource(s,source);glCompileShader(s);if(glGetShaderi(s,GL_COMPILE_STATUS)==GL_FALSE)throw new IllegalStateException(glGetShaderInfoLog(s));return s;}
 }

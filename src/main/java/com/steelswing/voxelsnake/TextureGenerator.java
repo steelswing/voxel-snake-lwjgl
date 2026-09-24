@@ -1,6 +1,8 @@
 package com.steelswing.voxelsnake;
 
 import java.awt.image.BufferedImage;
+import java.nio.ByteBuffer;
+import org.lwjgl.BufferUtils;
 import java.util.Random;
 
 /** Generates a noisy, layered pixel atlas using the reference project's approach. */
@@ -21,6 +23,20 @@ final class TextureGenerator {
             }
         }
         return image;
+    }
+
+    static ByteBuffer pixels() {
+        BufferedImage image = atlas();
+        ByteBuffer pixels = BufferUtils.createByteBuffer(image.getWidth() * image.getHeight() * 4);
+        for (int y = image.getHeight() - 1; y >= 0; y--) {
+            for (int x = 0; x < image.getWidth(); x++) {
+                int color = image.getRGB(x, y);
+                pixels.put((byte) (color >> 16)).put((byte) (color >> 8))
+                        .put((byte) color).put((byte) 0xff);
+            }
+        }
+        pixels.flip();
+        return pixels;
     }
 
     /** Stable per-block colour: no flicker and no external image assets required. */
