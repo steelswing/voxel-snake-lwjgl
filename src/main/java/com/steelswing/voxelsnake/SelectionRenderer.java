@@ -41,17 +41,17 @@ final class SelectionRenderer {
         NativeMesh mesh = new NativeMesh(144);
         for (int[] edge : EDGES) {
             float[] a = c[edge[0]], b = c[edge[1]];
-            mesh.put(a[0], a[1], a[2], 0, 0, 1);
-            mesh.put(b[0], b[1], b[2], 0, 0, 1);
+            mesh.put(a[0], a[1], a[2], 0, 1, 0, 0, 0, 1);
+            mesh.put(b[0], b[1], b[2], 0, 1, 0, 0, 0, 1);
         }
         glBindBuffer(GL_ARRAY_BUFFER, vbo);
         glBufferData(GL_ARRAY_BUFFER, memByteBuffer(mesh.address, mesh.floats * 4), GL_STREAM_DRAW);
         glEnableVertexAttribArray(positionAttribute);
         glEnableVertexAttribArray(texCoordAttribute);
         glEnableVertexAttribArray(lightAttribute);
-        glVertexAttribPointer(positionAttribute, 3, GL_FLOAT, false, 24, 0);
-        glVertexAttribPointer(texCoordAttribute, 2, GL_FLOAT, false, 24, 12);
-        glVertexAttribPointer(lightAttribute, 1, GL_FLOAT, false, 24, 20);
+        glVertexAttribPointer(positionAttribute, 3, GL_FLOAT, false, 36, 0);
+        glVertexAttribPointer(texCoordAttribute, 2, GL_FLOAT, false, 36, 24);
+        glVertexAttribPointer(lightAttribute, 1, GL_FLOAT, false, 36, 32);
         glDisable(GL_CULL_FACE);
         glEnable(GL_LINE_SMOOTH);
         glEnable(GL_POLYGON_OFFSET_LINE);
@@ -59,7 +59,7 @@ final class SelectionRenderer {
         glLineWidth(2f);
         glUniform1f(glGetUniformLocation(program, "useTexture"), 0);
         glUniform4f(glGetUniformLocation(program, "tint"), 1f, 0.85f, 0.1f, 1f);
-        glDrawArrays(GL_LINES, 0, mesh.floats / 6);
+        glDrawArrays(GL_LINES, 0, mesh.floats / 9);
         glDisable(GL_POLYGON_OFFSET_LINE);
         glDisable(GL_LINE_SMOOTH);
         glEnable(GL_CULL_FACE);

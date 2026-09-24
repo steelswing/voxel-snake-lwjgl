@@ -2,7 +2,6 @@ package com.steelswing.voxelsnake;
 
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.ArrayDeque;
 import java.util.Map;
 import java.util.Set;
 
@@ -15,13 +14,12 @@ final class World {
     static final int CHUNK_SIZE = 32;
     static final int CHUNK_COUNT = 32;
     static final int SIZE = CHUNK_SIZE * CHUNK_COUNT;
-    static final int HEIGHT = 128;
+    static final int HEIGHT = SIZE;
 
     private final long seed;
     private final Map<Long, Chunk> chunks = new HashMap<>();
-    private final Map<Long, byte[]> lightMaps = new HashMap<>();
-    private final Set<Long> lamps = new HashSet<>();
     private final Set<Long> dirtyChunks = new HashSet<>();
+    private final Map<Long, Long> chunkRevisions = new HashMap<>();
     private long revision;
 
     World(long seed) {
@@ -32,6 +30,24 @@ final class World {
         if (y < 0 || y >= HEIGHT) return 0;
         x = Math.floorMod(x, SIZE);
         z = Math.floorMod(z, SIZE);
+        return read(x, y, z);
+    }
+
+    synchronized MesherSnapshot snapshot(int startX, int startZ) {
+        byte[] data = new byte[33 * 33 * 33];
+        for (int x = 0; x <= CHUNK_SIZE; x++) {
+            for (int y = 0; y <= CHUNK_SIZE; y++) {
+                for (int z = 0; z <= CHUNK_SIZE; z++) {
+                    int worldY = y;
+                    data[x + y * 33 + z * 33 * 33] =
+                            worldY >= HEIGHT ? 0 : read(startX + x, worldY, startZ + z);
+                }
+            }
+        }
+        return new MesherSnapshot(startX, startZ, data);
+    }
+
+    private byte read(int x, int y, int z) {
         int chunkY = Math.floorDiv(y, CHUNK_SIZE);
         Chunk chunk = chunk(Math.floorDiv(x, CHUNK_SIZE), chunkY, Math.floorDiv(z, CHUNK_SIZE));
         return memGetByte(chunk.address + index(x, y, z));
@@ -46,10 +62,6 @@ final class World {
         if (memGetByte(address) != type) {
             memPutByte(address, type);
             revision++;
-            lightMaps.clear();
-            long blockKey = blockKey(x, y, z);
-            if (type == 6) lamps.add(blockKey);
-            else lamps.remove(blockKey);
             markDirty(x, y, z);
             return true;
         }
@@ -102,29 +114,15 @@ final class World {
     private void decorate(Chunk chunk, int chunkX, int chunkY, int chunkZ, int localX, int localZ,
                           int x, int z, int surface) {
         long hash = x * 341873128712L ^ z * 132897987541L ^ seed;
-        if (isTreeBase(x, z)) {
+        if (Math.floorMod(hash, 37) == 0) {
             for (int y = surface + 1; y <= surface + 4; y++) putIfLocal(chunk, chunkX, chunkY, chunkZ, x, y, z, (byte) 4);
             for (int ox = -2; ox <= 2; ox++) for (int oy = 3; oy <= 5; oy++) for (int oz = -2; oz <= 2; oz++) {
-                if (Math.abs(ox) + Math.abs(oz) + Math.max(0, oy - 4) <= 3
-                        && (Math.abs(ox) + Math.abs(oz) < 3 || oy == 5))
+                if (Math.abs(ox) + Math.abs(oz) + Math.max(0, oy - 4) <= 3)
                     putIfLocal(chunk, chunkX, chunkY, chunkZ, x + ox, surface + oy, z + oz, (byte) 5);
             }
-        } else if (Math.floorMod(hash, 29) == 0 && !isTreeBase(x, z)) {
+        } else if (Math.floorMod(hash, 29) == 0) {
             putIfLocal(chunk, chunkX, chunkY, chunkZ, x, surface + 1, z, (byte) 5);
         }
-    }
-
-    private boolean isTreeBase(int x, int z) {
-        long own = x * 341873128712L ^ z * 132897987541L ^ seed;
-        if (Math.floorMod(own, 37) != 0) return false;
-        for (int ox = -4; ox <= 4; ox++) {
-            for (int oz = -4; oz <= 4; oz++) {
-                if (ox == 0 && oz == 0) continue;
-                long other = (x + ox) * 341873128712L ^ (z + oz) * 132897987541L ^ seed;
-                if (Math.floorMod(other, 37) == 0 && other < own) return false;
-            }
-        }
-        return true;
     }
 
     private void putIfLocal(Chunk chunk, int chunkX, int chunkY, int chunkZ, int x, int y, int z, byte type) {
@@ -137,8 +135,7 @@ final class World {
     synchronized void close() {
         for (Chunk chunk : chunks.values()) nmemFree(chunk.address);
         chunks.clear();
-        lightMaps.clear();
-        lamps.clear();
+        chunkRevisions.clear();
     }
 
     synchronized long revision() {
@@ -151,80 +148,15 @@ final class World {
         return result;
     }
 
-    synchronized float light(int x, int y, int z) {
-        if (y < 0 || y >= HEIGHT) return .35f;
-        int chunkX = Math.floorDiv(Math.floorMod(x, SIZE), CHUNK_SIZE);
-        int chunkZ = Math.floorDiv(Math.floorMod(z, SIZE), CHUNK_SIZE);
+    synchronized long chunkRevision(int chunkX, int chunkZ) {
+        return chunkRevisions.getOrDefault(renderChunkKey(chunkX, chunkZ), 0L);
+    }
+
+    synchronized void markChunkDirty(int chunkX, int chunkZ) {
         long key = renderChunkKey(chunkX, chunkZ);
-        byte[] map = lightMaps.get(key);
-        if (map == null) {
-            map = buildLightMap(chunkX, chunkZ);
-            lightMaps.put(key, map);
-        }
-        int localX = Math.floorMod(x, CHUNK_SIZE);
-        int localZ = Math.floorMod(z, CHUNK_SIZE);
-        int level = map[localX | (y << 5) | (localZ << 12)] & 0xFF;
-        return .35f + level / 15f * .65f;
+        dirtyChunks.add(key);
+        chunkRevisions.put(key, chunkRevisions.getOrDefault(key, 0L) + 1L);
     }
-
-    private byte[] buildLightMap(int chunkX, int chunkZ) {
-        int volume = CHUNK_SIZE * HEIGHT * CHUNK_SIZE;
-        byte[] map = new byte[volume];
-        ArrayDeque<Integer> queue = new ArrayDeque<>();
-        int startX = chunkX * CHUNK_SIZE;
-        int startZ = chunkZ * CHUNK_SIZE;
-        for (int localX = 0; localX < CHUNK_SIZE; localX++) {
-            for (int localZ = 0; localZ < CHUNK_SIZE; localZ++) {
-                int sunlight = 15;
-                for (int y = HEIGHT - 1; y >= 0; y--) {
-                    int index = localX | (y << 5) | (localZ << 12);
-                    if (get(startX + localX, y, startZ + localZ) != 0) {
-                        sunlight = 0;
-                    } else {
-                        map[index] = (byte) sunlight;
-                        if (sunlight > 1) queue.add(index);
-                    }
-                }
-            }
-        }
-        for (long lamp : lamps) {
-            int lampX = (int) (lamp >> 42);
-            int lampY = (int) ((lamp >> 21) & 0x1FFFFF);
-            int lampZ = (int) (lamp & 0x1FFFFF);
-            if (lampX < startX || lampX >= startX + CHUNK_SIZE
-                    || lampZ < startZ || lampZ >= startZ + CHUNK_SIZE) continue;
-            int index = (lampX - startX) | (lampY << 5) | ((lampZ - startZ) << 12);
-            if (get(lampX, lampY, lampZ) == 6) {
-                map[index] = 14;
-                queue.add(index);
-            }
-        }
-        while (!queue.isEmpty()) {
-            int index = queue.removeFirst();
-            int level = map[index] & 0xFF;
-            if (level <= 1) continue;
-            int localX = index & 31;
-            int y = (index >>> 5) & 127;
-            int localZ = (index >>> 12) & 31;
-            for (int[] direction : LIGHT_DIRECTIONS) {
-                int nx = localX + direction[0];
-                int ny = y + direction[1];
-                int nz = localZ + direction[2];
-                if (nx < 0 || nx >= 32 || ny < 0 || ny >= HEIGHT || nz < 0 || nz >= 32) continue;
-                if (get(startX + nx, ny, startZ + nz) != 0) continue;
-                int next = nx | (ny << 5) | (nz << 12);
-                if ((map[next] & 0xFF) < level - 1) {
-                    map[next] = (byte) (level - 1);
-                    queue.addLast(next);
-                }
-            }
-        }
-        return map;
-    }
-
-    private static final int[][] LIGHT_DIRECTIONS = {
-            {1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}
-    };
 
     private void markDirty(int x, int y, int z) {
         int chunkX = Math.floorDiv(x, CHUNK_SIZE);
@@ -234,7 +166,9 @@ final class World {
             for (int oy = -1; oy <= 1; oy++) {
                 for (int oz = -1; oz <= 1; oz++) {
                     if (Math.abs(ox) + Math.abs(oy) + Math.abs(oz) <= 1) {
-                        dirtyChunks.add(renderChunkKey(chunkX + ox, chunkZ + oz));
+                        long key = renderChunkKey(chunkX + ox, chunkZ + oz);
+                        dirtyChunks.add(key);
+                        chunkRevisions.put(key, chunkRevisions.getOrDefault(key, 0L) + 1L);
                     }
                 }
             }
@@ -251,17 +185,31 @@ final class World {
         return ((long) x << 32) ^ (z & 0xffffffffL);
     }
 
-    private static long blockKey(int x, int y, int z) {
-        return ((long) (x & 0x1FFFFF) << 42)
-                | ((long) (y & 0x1FFFFF) << 21)
-                | (z & 0x1FFFFF);
-    }
-
     private static int index(int x, int y, int z) {
         return (x & 31) | ((y & 31) << 5) | ((z & 31) << 10);
     }
 
     private static final class Chunk {
         private final long address = nmemCalloc(CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE, 1);
+    }
+
+    static final class MesherSnapshot {
+        final int startX;
+        final int startZ;
+        private final byte[] data;
+
+        MesherSnapshot(int startX, int startZ, byte[] data) {
+            this.startX = startX;
+            this.startZ = startZ;
+            this.data = data;
+        }
+
+        byte get(int x, int y, int z) {
+            int localX = x - startX;
+            int localZ = z - startZ;
+            if (localX < 0 || localX > CHUNK_SIZE || localZ < 0 || localZ > CHUNK_SIZE
+                    || y < 0 || y > CHUNK_SIZE) return 0;
+            return data[localX + y * 33 + localZ * 33 * 33];
+        }
     }
 }

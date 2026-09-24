@@ -15,16 +15,19 @@ final class NativeMesh {
         address = nmemAlloc(capacity * 4L);
     }
 
-    void put(float x, float y, float z, float u, float v, float light) {
-        ensure(6);
+    void put(float x, float y, float z, float nx, float ny, float nz, float u, float v, float light) {
+        ensure(9);
         long at = address + floats * 4L;
         memPutFloat(at, x);
         memPutFloat(at + 4, y);
         memPutFloat(at + 8, z);
-        memPutFloat(at + 12, u);
-        memPutFloat(at + 16, v);
-        memPutFloat(at + 20, light);
-        floats += 6;
+        memPutFloat(at + 12, nx);
+        memPutFloat(at + 16, ny);
+        memPutFloat(at + 20, nz);
+        memPutFloat(at + 24, u);
+        memPutFloat(at + 28, v);
+        memPutFloat(at + 32, light);
+        floats += 9;
     }
 
     void free() {
