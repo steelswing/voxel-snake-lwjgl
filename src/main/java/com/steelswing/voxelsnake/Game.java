@@ -498,17 +498,10 @@ final class Game {
         try {
             int startX = chunkX * World.CHUNK_SIZE;
             int startZ = chunkZ * World.CHUNK_SIZE;
-            for (int x = startX; x < startX + World.CHUNK_SIZE; x++) {
-                for (int y = 0; y < World.CHUNK_SIZE; y++) {
-                    for (int z = startZ; z < startZ + World.CHUNK_SIZE; z++) {
-                        if (Thread.currentThread().isInterrupted()) {
-                            throw new CancellationException("Chunk build interrupted");
-                        }
-                        int type = world.get(x, y, z);
-                        if (type != 0) visibleCube(data, x, y, z, type);
-                    }
-                }
+            if (Thread.currentThread().isInterrupted()) {
+                throw new CancellationException("Chunk build interrupted");
             }
+            MarchingCubesMesher.build(world, data, startX, startZ);
             return new ChunkBuild(world.revision(), data);
         } catch (CancellationException e) {
             data.free();
