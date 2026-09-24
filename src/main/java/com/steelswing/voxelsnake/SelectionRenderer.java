@@ -12,13 +12,14 @@ import static org.lwjgl.opengl.GL11C.glPolygonOffset;
 import static org.lwjgl.opengl.GL15C.GL_ARRAY_BUFFER;
 import static org.lwjgl.opengl.GL15C.GL_STREAM_DRAW;
 import static org.lwjgl.opengl.GL15C.glBindBuffer;
-import static org.lwjgl.opengl.GL15C.nglBufferData;
+import static org.lwjgl.opengl.GL15C.glBufferData;
 import static org.lwjgl.opengl.GL20C.glGetUniformLocation;
 import static org.lwjgl.opengl.GL20C.glUniform1f;
 import static org.lwjgl.opengl.GL20C.glUniform4f;
 import static org.lwjgl.opengl.GL20C.glEnableVertexAttribArray;
 import static org.lwjgl.opengl.GL20C.glVertexAttribPointer;
 import static org.lwjgl.opengl.GL11C.GL_FLOAT;
+import static org.lwjgl.system.MemoryUtil.memByteBuffer;
 
 final class SelectionRenderer {
     private static final int[][] EDGES = {
@@ -44,7 +45,7 @@ final class SelectionRenderer {
             mesh.put(b[0], b[1], b[2], 0, 0, 1);
         }
         glBindBuffer(GL_ARRAY_BUFFER, vbo);
-        nglBufferData(GL_ARRAY_BUFFER, mesh.floats * 4L, mesh.address, GL_STREAM_DRAW);
+        glBufferData(GL_ARRAY_BUFFER, memByteBuffer(mesh.address, mesh.floats * 4), GL_STREAM_DRAW);
         glEnableVertexAttribArray(positionAttribute);
         glEnableVertexAttribArray(texCoordAttribute);
         glEnableVertexAttribArray(lightAttribute);

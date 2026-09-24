@@ -111,7 +111,7 @@ final class World {
         }
     }
 
-    void close() {
+    synchronized void close() {
         for (Chunk chunk : chunks.values()) nmemFree(chunk.address);
         chunks.clear();
     }

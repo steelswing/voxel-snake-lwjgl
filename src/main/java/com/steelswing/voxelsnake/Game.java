@@ -9,17 +9,23 @@ import java.util.List;
 import java.util.Map;
 import java.util.Random;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 
 import static org.lwjgl.glfw.GLFW.*;
 import static org.lwjgl.opengl.GL11C.*;
 import static org.lwjgl.opengl.GL12C.*;
 import static org.lwjgl.opengl.GL20C.*;
-import static org.lwjgl.opengl.GL15C.nglBufferData;
+import static org.lwjgl.opengl.GL15C.glBufferData;
 import static org.lwjgl.system.MemoryUtil.NULL;
+import static org.lwjgl.system.MemoryUtil.memByteBuffer;
 import static org.lwjgl.system.MemoryUtil.nmemFree;
 
 final class Game {
@@ -61,12 +67,19 @@ final class Game {
     private boolean snakeDead;
     private int pendingDx = 1;
     private int pendingDz;
+    private final Path logFile = Path.of("voxel-snake.log").toAbsolutePath();
 
     void run() {
-        init();
         try {
+            log("Starting Voxel Snake, Java " + System.getProperty("java.version")
+                    + ", OS " + System.getProperty("os.name") + " " + System.getProperty("os.arch"));
+            init();
             loop();
+        } catch (RuntimeException | Error failure) {
+            log("FATAL: game loop stopped", failure);
+            throw failure;
         } finally {
+            log("Stopping game");
             for (ChunkMesh mesh : meshes.values()) glDeleteBuffers(mesh.vbo);
             meshes.clear();
             for (Future<ChunkBuild> pending : pendingMeshes.values()) pending.cancel(true);
@@ -80,14 +93,16 @@ final class Game {
                 Thread.currentThread().interrupt();
             }
             world.close();
-            selectionRenderer.free();
+            if (selectionRenderer != null) selectionRenderer.free();
             if (window != NULL) glfwDestroyWindow(window);
             glfwTerminate();
+            log("Shutdown complete");
         }
 
     }
 
     private void init() {
+        log("Initializing GLFW");
         GLFWErrorCallback.createPrint(System.err).set();
         if (!glfwInit()) throw new IllegalStateException("GLFW initialization failed");
         glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 2);
@@ -96,12 +111,19 @@ final class Game {
         if (window == NULL) throw new IllegalStateException("Window creation failed");
         glfwMakeContextCurrent(window);
         glfwSwapInterval(1);
+        log("Creating OpenGL capabilities");
         GL.createCapabilities();
+        log("OpenGL vendor=" + glGetString(GL_VENDOR) + ", renderer=" + glGetString(GL_RENDERER)
+                + ", version=" + glGetString(GL_VERSION));
         glEnable(GL_DEPTH_TEST);
         glEnable(GL_CULL_FACE);
         glCullFace(GL_BACK);
+        log("Creating shaders");
         program = createProgram();
+        checkGl("shader program");
+        log("Creating texture atlas");
         texture = createTexture();
+        checkGl("texture");
         entityVbo = glGenBuffers();
         selectionRenderer = new SelectionRenderer();
         addSnake(16, 16);
@@ -120,6 +142,8 @@ final class Game {
         followTargetY = head[1] + .25f;
         followTargetZ = head[2] + .5f;
         lastFrameTime = glfwGetTime();
+        nextStep = lastFrameTime + .22;
+        log("Initialization complete");
         glfwSetKeyCallback(window, (w, key, scan, action, mods) -> {
             if (key >= 0 && key < keys.length) keys[key] = action != GLFW_RELEASE;
             if (action != GLFW_PRESS) return;
@@ -185,6 +209,7 @@ final class Game {
 
     private void loop() {
         while (!glfwWindowShouldClose(window)) {
+            glfwPollEvents();
             double now = glfwGetTime();
             float frameTime = (float) Math.min(.1, Math.max(0, now - lastFrameTime));
             lastFrameTime = now;
@@ -196,7 +221,6 @@ final class Game {
             if (editMode) updateFreeCamera(frameTime);
             render(frameTime);
             glfwSwapBuffers(window);
-            glfwPollEvents();
         }
     }
 
@@ -401,12 +425,18 @@ final class Game {
             }
         }
         NativeMesh entities = new NativeMesh((snake.size() + 1) * 216);
-        for (int[] part : snake) cube(entities, part[0], part[1], part[2], 6);
-        cube(entities, apple[0], apple[1], apple[2], 7);
-        glBindBuffer(GL_ARRAY_BUFFER, entityVbo);
-        nglBufferData(GL_ARRAY_BUFFER, entities.floats * 4L, entities.address, GL_STREAM_DRAW);
-        glDrawArrays(GL_TRIANGLES, 0, entities.floats / 6);
-        entities.free();
+        try {
+            for (int[] part : snake) cube(entities, part[0], part[1], part[2], 6);
+            cube(entities, apple[0], apple[1], apple[2], 7);
+            glBindBuffer(GL_ARRAY_BUFFER, entityVbo);
+            glVertexAttribPointer(position, 3, GL_FLOAT, false, 24, 0);
+            glVertexAttribPointer(texCoord, 2, GL_FLOAT, false, 24, 12);
+            glVertexAttribPointer(light, 1, GL_FLOAT, false, 24, 20);
+            glBufferData(GL_ARRAY_BUFFER, memByteBuffer(entities.address, entities.floats * 4), GL_STREAM_DRAW);
+            glDrawArrays(GL_TRIANGLES, 0, entities.floats / 6);
+        } finally {
+            entities.free();
+        }
         RaycastHit hit = editMode ? raycast() : null;
         if (hit != null) selectionRenderer.render(program, position, texCoord, light, hit.block());
     }
@@ -426,33 +456,52 @@ final class Game {
         try {
             ChunkBuild build = pending.get();
             int vbo = glGenBuffers();
-            glBindBuffer(GL_ARRAY_BUFFER, vbo);
-            nglBufferData(GL_ARRAY_BUFFER, build.mesh.floats * 4L, build.mesh.address, GL_STATIC_DRAW);
-            ChunkMesh mesh = new ChunkMesh(vbo, build.mesh.floats / 6);
-            build.mesh.free();
-            meshes.put(key, mesh);
-            return mesh;
+            try {
+                glBindBuffer(GL_ARRAY_BUFFER, vbo);
+                glBufferData(GL_ARRAY_BUFFER, memByteBuffer(build.mesh.address, build.mesh.floats * 4), GL_STATIC_DRAW);
+                checkGl("chunk upload " + chunkX + "," + chunkZ);
+                ChunkMesh mesh = new ChunkMesh(vbo, build.mesh.floats / 6);
+                meshes.put(key, mesh);
+                return mesh;
+            } finally {
+                build.mesh.free();
+            }
+        } catch (CancellationException e) {
+            log("Chunk mesh cancelled at " + chunkX + "," + chunkZ);
+            return null;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             return null;
         } catch (ExecutionException e) {
-            throw new IllegalStateException("Chunk mesh build failed", e.getCause());
+            log("Chunk mesh failed at " + chunkX + "," + chunkZ, e.getCause());
+            return null;
         }
     }
 
     private ChunkBuild buildChunk(int chunkX, int chunkZ) {
         NativeMesh data = new NativeMesh(262144);
-        int startX = chunkX * World.CHUNK_SIZE;
-        int startZ = chunkZ * World.CHUNK_SIZE;
-        for (int x = startX; x < startX + World.CHUNK_SIZE; x++) {
-            for (int y = 0; y < World.CHUNK_SIZE; y++) {
-                for (int z = startZ; z < startZ + World.CHUNK_SIZE; z++) {
-                    int type = world.get(x, y, z);
-                    if (type != 0) visibleCube(data, x, y, z, type);
+        try {
+            int startX = chunkX * World.CHUNK_SIZE;
+            int startZ = chunkZ * World.CHUNK_SIZE;
+            for (int x = startX; x < startX + World.CHUNK_SIZE; x++) {
+                for (int y = 0; y < World.CHUNK_SIZE; y++) {
+                    for (int z = startZ; z < startZ + World.CHUNK_SIZE; z++) {
+                        if (Thread.currentThread().isInterrupted()) {
+                            throw new CancellationException("Chunk build interrupted");
+                        }
+                        int type = world.get(x, y, z);
+                        if (type != 0) visibleCube(data, x, y, z, type);
+                    }
                 }
             }
+            return new ChunkBuild(data);
+        } catch (CancellationException e) {
+            data.free();
+            throw e;
+        } catch (RuntimeException | Error e) {
+            data.free();
+            throw e;
         }
-        return new ChunkBuild(data);
     }
 
     private static final class ChunkMesh {
@@ -570,7 +619,15 @@ final class Game {
     private static int createProgram() {
         int vs=shader(GL_VERTEX_SHADER,"#version 120\nattribute vec3 position; attribute vec2 texCoord; attribute float light; varying vec2 vTexCoord; varying float vLight; varying float vDistance; uniform mat4 matrix; uniform vec3 fogOrigin; void main(){gl_Position=matrix*vec4(position,1.0);vTexCoord=texCoord;vLight=light;vDistance=distance(position,fogOrigin);}");
         int fs=shader(GL_FRAGMENT_SHADER,"#version 120\nuniform sampler2D atlas; uniform float useTexture; uniform vec4 tint; uniform float fogStart; uniform float fogEnd; varying vec2 vTexCoord; varying float vLight; varying float vDistance; void main(){vec4 color=useTexture > 0.5 ? texture2D(atlas,vTexCoord)*vLight : tint; float fog=clamp((vDistance-fogStart)/(fogEnd-fogStart),0.0,1.0); color.rgb=mix(color.rgb,vec3(0.56,0.72,0.88),fog); gl_FragColor=color;}");
-        int p=glCreateProgram();glAttachShader(p,vs);glAttachShader(p,fs);glLinkProgram(p);glDeleteShader(vs);glDeleteShader(fs);return p;
+        int p=glCreateProgram();glAttachShader(p,vs);glAttachShader(p,fs);glLinkProgram(p);
+        if (glGetProgrami(p, GL_LINK_STATUS) == GL_FALSE) {
+            String info = glGetProgramInfoLog(p);
+            glDeleteProgram(p);
+            glDeleteShader(vs);
+            glDeleteShader(fs);
+            throw new IllegalStateException("Shader link failed: " + info);
+        }
+        glDeleteShader(vs);glDeleteShader(fs);return p;
     }
 
     private static int createTexture() {
@@ -587,4 +644,37 @@ final class Game {
         return id;
     }
     private static int shader(int type,String source){int s=glCreateShader(type);glShaderSource(s,source);glCompileShader(s);if(glGetShaderi(s,GL_COMPILE_STATUS)==GL_FALSE)throw new IllegalStateException(glGetShaderInfoLog(s));return s;}
+
+    private void checkGl(String stage) {
+        int error = glGetError();
+        if (error != GL_NO_ERROR) throw new IllegalStateException("OpenGL error 0x"
+                + Integer.toHexString(error) + " after " + stage);
+    }
+
+    private void log(String message) {
+        try {
+            Files.writeString(logFile, message + System.lineSeparator(),
+                    StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.APPEND);
+        } catch (IOException ignored) {
+            System.err.println(message);
+        }
+        System.err.println(message);
+    }
+
+    private void log(String message, Throwable failure) {
+        log(message + ": " + failure);
+        failure.printStackTrace(System.err);
+        try {
+            Files.writeString(logFile, stackTrace(failure),
+                    StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.APPEND);
+        } catch (IOException ignored) {
+            // The original exception has already been printed to stderr.
+        }
+    }
+
+    private static String stackTrace(Throwable failure) {
+        java.io.StringWriter output = new java.io.StringWriter();
+        failure.printStackTrace(new java.io.PrintWriter(output));
+        return output + System.lineSeparator();
+    }
 }
