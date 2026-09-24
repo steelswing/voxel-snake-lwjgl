@@ -272,6 +272,11 @@ final class MarchingCubesMesher {
     private MarchingCubesMesher() {}
 
     static void build(World world, NativeMesh mesh, int startX, int startZ) {
+        World.MesherSnapshot snapshot = world.snapshot(startX, startZ);
+        build(snapshot, mesh, startX, startZ);
+    }
+
+    private static void build(World.MesherSnapshot world, NativeMesh mesh, int startX, int startZ) {
         for (int x = startX; x < startX + World.CHUNK_SIZE; x++) {
             for (int y = 0; y < World.CHUNK_SIZE; y++) {
                 for (int z = startZ; z < startZ + World.CHUNK_SIZE; z++) {
@@ -281,7 +286,7 @@ final class MarchingCubesMesher {
         }
     }
 
-    private static void polygonize(World world, NativeMesh mesh, int x, int y, int z) {
+    private static void polygonize(World.MesherSnapshot world, NativeMesh mesh, int x, int y, int z) {
         float[] values = new float[8];
         int cubeIndex = 0;
         for (int i = 0; i < 8; i++) {
@@ -297,11 +302,11 @@ final class MarchingCubesMesher {
                     intersection(x, y, z, triangles[i + 1], values),
                     intersection(x, y, z, triangles[i + 2], values)
             };
-            putTriangle(world, mesh, vertices, material);
+            putTriangle(world, mesh, vertices, material, x, y, z);
         }
     }
 
-    private static int material(float[] values, World world, int x, int y, int z) {
+    private static int material(float[] values, World.MesherSnapshot world, int x, int y, int z) {
         int[] counts = new int[8];
         for (int i = 0; i < values.length; i++) {
             if (values[i] < .5f) {
@@ -327,7 +332,8 @@ final class MarchingCubesMesher {
         return new float[] {x + pa[0] + (pb[0] - pa[0]) * t, y + pa[1] + (pb[1] - pa[1]) * t, z + pa[2] + (pb[2] - pa[2]) * t};
     }
 
-    private static void putTriangle(World world, NativeMesh mesh, float[][] vertices, int material) {
+    private static void putTriangle(World.MesherSnapshot world, NativeMesh mesh, float[][] vertices,
+                                    int material, int cellX, int cellY, int cellZ) {
         float[] a = vertices[0], b = vertices[1], c = vertices[2];
         float ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2];
         float vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
@@ -335,31 +341,39 @@ final class MarchingCubesMesher {
         float length = (float) Math.sqrt(nx * nx + ny * ny + nz * nz);
         if (length < 0.00001f) return;
         nx /= length; ny /= length; nz /= length;
+        float absNormalX = Math.abs(nx);
+        float absNormalY = Math.abs(ny);
+        float absNormalZ = Math.abs(nz);
+        int projection;
+        if (absNormalY >= absNormalX && absNormalY >= absNormalZ) {
+            projection = 0;
+        } else if (absNormalX >= absNormalZ) {
+            projection = 1;
+        } else {
+            projection = 2;
+        }
         for (float[] vertex : vertices) {
             float gx = sample(world, vertex[0] + 0.01f, vertex[1], vertex[2]) - sample(world, vertex[0] - 0.01f, vertex[1], vertex[2]);
             float gy = sample(world, vertex[0], vertex[1] + 0.01f, vertex[2]) - sample(world, vertex[0], vertex[1] - 0.01f, vertex[2]);
             float gz = sample(world, vertex[0], vertex[1], vertex[2] + 0.01f) - sample(world, vertex[0], vertex[1], vertex[2] - 0.01f);
             float gl = (float) Math.sqrt(gx * gx + gy * gy + gz * gz);
             if (gl > 0.00001f) { gx /= gl; gy /= gl; gz /= gl; } else { gx = nx; gy = ny; gz = nz; }
-            float absX = Math.abs(gx);
-            float absY = Math.abs(gy);
-            float absZ = Math.abs(gz);
             float textureU;
             float textureV;
             int section;
-            if (absY >= absX && absY >= absZ) {
-                textureU = vertex[0] - (float) Math.floor(vertex[0]);
-                textureV = vertex[2] - (float) Math.floor(vertex[2]);
-                section = gy >= 0 ? 0 : 2;
-            } else if (absX >= absZ) {
-                textureU = vertex[2] - (float) Math.floor(vertex[2]);
-                textureV = vertex[1] - (float) Math.floor(vertex[1]);
-                if (gx < 0) textureU = 1f - textureU;
+            if (projection == 0) {
+                textureU = vertex[0] - cellX;
+                textureV = vertex[2] - cellZ;
+                section = ny >= 0 ? 0 : 2;
+            } else if (projection == 1) {
+                textureU = vertex[2] - cellZ;
+                textureV = vertex[1] - cellY;
+                if (nx < 0) textureU = 1f - textureU;
                 section = 1;
             } else {
-                textureU = vertex[0] - (float) Math.floor(vertex[0]);
-                textureV = vertex[1] - (float) Math.floor(vertex[1]);
-                if (gz < 0) textureU = 1f - textureU;
+                textureU = vertex[0] - cellX;
+                textureV = vertex[1] - cellY;
+                if (nz < 0) textureU = 1f - textureU;
                 section = 1;
             }
             int tile = Math.max(0, Math.min(7, material - 1));
@@ -374,7 +388,7 @@ final class MarchingCubesMesher {
         return texel / atlasSize;
     }
 
-    private static float sample(World world, float x, float y, float z) {
+    private static float sample(World.MesherSnapshot world, float x, float y, float z) {
         int baseX = (int) Math.floor(x);
         int baseY = (int) Math.floor(y);
         int baseZ = (int) Math.floor(z);

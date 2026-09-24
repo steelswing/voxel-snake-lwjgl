@@ -30,6 +30,24 @@ final class World {
         if (y < 0 || y >= HEIGHT) return 0;
         x = Math.floorMod(x, SIZE);
         z = Math.floorMod(z, SIZE);
+        return read(x, y, z);
+    }
+
+    synchronized MesherSnapshot snapshot(int startX, int startZ) {
+        byte[] data = new byte[33 * 33 * 33];
+        for (int x = 0; x <= CHUNK_SIZE; x++) {
+            for (int y = 0; y <= CHUNK_SIZE; y++) {
+                for (int z = 0; z <= CHUNK_SIZE; z++) {
+                    int worldY = y;
+                    data[x + y * 33 + z * 33 * 33] =
+                            worldY >= HEIGHT ? 0 : read(startX + x, worldY, startZ + z);
+                }
+            }
+        }
+        return new MesherSnapshot(startX, startZ, data);
+    }
+
+    private byte read(int x, int y, int z) {
         int chunkY = Math.floorDiv(y, CHUNK_SIZE);
         Chunk chunk = chunk(Math.floorDiv(x, CHUNK_SIZE), chunkY, Math.floorDiv(z, CHUNK_SIZE));
         return memGetByte(chunk.address + index(x, y, z));
@@ -173,5 +191,25 @@ final class World {
 
     private static final class Chunk {
         private final long address = nmemCalloc(CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE, 1);
+    }
+
+    static final class MesherSnapshot {
+        final int startX;
+        final int startZ;
+        private final byte[] data;
+
+        MesherSnapshot(int startX, int startZ, byte[] data) {
+            this.startX = startX;
+            this.startZ = startZ;
+            this.data = data;
+        }
+
+        byte get(int x, int y, int z) {
+            int localX = x - startX;
+            int localZ = z - startZ;
+            if (localX < 0 || localX > CHUNK_SIZE || localZ < 0 || localZ > CHUNK_SIZE
+                    || y < 0 || y > CHUNK_SIZE) return 0;
+            return data[localX + y * 33 + localZ * 33 * 33];
+        }
     }
 }

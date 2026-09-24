@@ -31,6 +31,8 @@ import static org.lwjgl.system.MemoryUtil.memByteBuffer;
 import static org.lwjgl.system.MemoryUtil.nmemFree;
 
 final class Game {
+    private static final int MESH_WORKERS =
+            Math.min(4, Math.max(1, Runtime.getRuntime().availableProcessors() - 1));
     private long window;
     private int program;
     private int texture;
@@ -63,13 +65,17 @@ final class Game {
     private boolean firstMouse = true;
     private int selectedBlock = 2;
     private final Map<Long, ChunkMesh> meshes = new HashMap<>();
-    private final Map<Long, Future<ChunkBuild>> pendingMeshes = new HashMap<>();
+    private final Map<Long, BuildWorker> pendingMeshes = new HashMap<>();
+    private final List<BuildWorker> buildWorkers = new ArrayList<>();
     private final Set<Long> invalidatedMeshes = new HashSet<>();
-    private final ExecutorService meshExecutor = Executors.newFixedThreadPool(
-            Math.min(4, Math.max(1, Runtime.getRuntime().availableProcessors() - 1)));
+    private final ExecutorService meshExecutor = Executors.newFixedThreadPool(MESH_WORKERS);
     private boolean snakeDead;
     private int pendingDx = 1;
     private int pendingDz;
+
+    {
+        for (int i = 0; i < MESH_WORKERS; i++) buildWorkers.add(new BuildWorker());
+    }
     private final Path logFile = Path.of("voxel-snake.log").toAbsolutePath();
 
     void run() {
@@ -85,7 +91,9 @@ final class Game {
             log("Stopping game");
             for (ChunkMesh mesh : meshes.values()) glDeleteBuffers(mesh.vbo);
             meshes.clear();
-            for (Future<ChunkBuild> pending : pendingMeshes.values()) pending.cancel(true);
+            for (BuildWorker pending : buildWorkers) {
+                if (pending.future != null) pending.future.cancel(true);
+            }
             pendingMeshes.clear();
             meshExecutor.shutdownNow();
             try {
@@ -201,13 +209,29 @@ final class Game {
         RaycastHit hit = raycast();
         if (hit == null) return;
         if (!add) {
-            world.set(hit.x, hit.y, hit.z, (byte) 0);
+            if (world.set(hit.x, hit.y, hit.z, (byte) 0)) {
+                invalidateBlockArea(hit.x, hit.z);
+            }
             return;
         }
         int x = hit.x + hit.normalX;
         int y = hit.y + hit.normalY;
         int z = hit.z + hit.normalZ;
-        if (world.get(x, y, z) == 0) world.set(x, y, z, (byte) selectedBlock);
+        if (world.get(x, y, z) == 0 && world.set(x, y, z, (byte) selectedBlock)) {
+            invalidateBlockArea(x, z);
+        }
+    }
+
+    private void invalidateBlockArea(int x, int z) {
+        int chunkX = Math.floorDiv(Math.floorMod(x, World.SIZE), World.CHUNK_SIZE);
+        int chunkZ = Math.floorDiv(Math.floorMod(z, World.SIZE), World.CHUNK_SIZE);
+        for (int dx = -1; dx <= 1; dx++) {
+            for (int dz = -1; dz <= 1; dz++) {
+                if (Math.abs(dx) + Math.abs(dz) <= 1) {
+                    invalidatedMeshes.add(World.renderChunkKey(chunkX + dx, chunkZ + dz));
+                }
+            }
+        }
     }
 
     private void loop() {
@@ -397,6 +421,7 @@ final class Game {
         for (long dirtyKey : world.consumeDirtyChunks()) {
             invalidatedMeshes.add(dirtyKey);
         }
+        completeFinishedWorkers();
         glUseProgram(program);
         glUniform1f(glGetUniformLocation(program, "useTexture"), 1f);
         glActiveTexture(GL_TEXTURE0);
@@ -420,20 +445,15 @@ final class Game {
         int centerChunkX = Math.floorDiv(centerX, World.CHUNK_SIZE);
         int centerChunkZ = Math.floorDiv(centerZ, World.CHUNK_SIZE);
         int chunkRadius = 8;
-        for (int chunkX = centerChunkX - chunkRadius; chunkX <= centerChunkX + chunkRadius; chunkX++) {
-            for (int chunkZ = centerChunkZ - chunkRadius; chunkZ <= centerChunkZ + chunkRadius; chunkZ++) {
-                int offsetX = chunkX - centerChunkX;
-                int offsetZ = chunkZ - centerChunkZ;
-                if (offsetX * offsetX + offsetZ * offsetZ > chunkRadius * chunkRadius) continue;
-                ChunkMesh mesh = chunkMesh(chunkX, chunkZ);
-                if (mesh == null) continue;
-                glBindBuffer(GL_ARRAY_BUFFER, mesh.vbo);
-                glVertexAttribPointer(position, 3, GL_FLOAT, false, 36, 0);
-                glVertexAttribPointer(normal, 3, GL_FLOAT, false, 36, 12);
-                glVertexAttribPointer(texCoord, 2, GL_FLOAT, false, 36, 24);
-                glVertexAttribPointer(light, 1, GL_FLOAT, false, 36, 32);
-                glDrawArrays(GL_TRIANGLES, 0, mesh.vertices);
-            }
+        for (int[] chunk : spiralChunks(centerChunkX, centerChunkZ, chunkRadius)) {
+            ChunkMesh mesh = chunkMesh(chunk[0], chunk[1]);
+            if (mesh == null) continue;
+            glBindBuffer(GL_ARRAY_BUFFER, mesh.vbo);
+            glVertexAttribPointer(position, 3, GL_FLOAT, false, 36, 0);
+            glVertexAttribPointer(normal, 3, GL_FLOAT, false, 36, 12);
+            glVertexAttribPointer(texCoord, 2, GL_FLOAT, false, 36, 24);
+            glVertexAttribPointer(light, 1, GL_FLOAT, false, 36, 32);
+            glDrawArrays(GL_TRIANGLES, 0, mesh.vertices);
         }
         NativeMesh entities = new NativeMesh((snake.size() + 1) * 216);
         try {
@@ -453,50 +473,92 @@ final class Game {
         if (hit != null) selectionRenderer.render(program, position, texCoord, light, hit.block());
     }
 
+    private static List<int[]> spiralChunks(int centerX, int centerZ, int radius) {
+        List<int[]> result = new ArrayList<>((radius * 2 + 1) * (radius * 2 + 1));
+        addSpiralChunk(result, centerX, centerZ, centerX, centerZ, radius);
+        for (int layer = 1; layer <= radius; layer++) {
+            for (int x = centerX - layer; x <= centerX + layer; x++) {
+                addSpiralChunk(result, x, centerZ - layer, centerX, centerZ, radius);
+            }
+            for (int z = centerZ - layer + 1; z <= centerZ + layer; z++) {
+                addSpiralChunk(result, centerX + layer, z, centerX, centerZ, radius);
+            }
+            for (int x = centerX + layer - 1; x >= centerX - layer; x--) {
+                addSpiralChunk(result, x, centerZ + layer, centerX, centerZ, radius);
+            }
+            for (int z = centerZ + layer - 1; z > centerZ - layer; z--) {
+                addSpiralChunk(result, centerX - layer, z, centerX, centerZ, radius);
+            }
+        }
+        return result;
+    }
+
+    private static void addSpiralChunk(List<int[]> result, int x, int z,
+                                       int centerX, int centerZ, int radius) {
+        int dx = x - centerX;
+        int dz = z - centerZ;
+        if (dx * dx + dz * dz <= radius * radius) result.add(new int[] {x, z});
+    }
+
     private ChunkMesh chunkMesh(int chunkX, int chunkZ) {
         long key = World.renderChunkKey(chunkX, chunkZ);
         ChunkMesh cached = meshes.get(key);
-        Future<ChunkBuild> pending = pendingMeshes.get(key);
-        if (pending != null && pending.isDone()) {
-            pendingMeshes.remove(key);
-            try {
-                ChunkBuild build = pending.get();
-                if (build.revision != world.chunkRevision(chunkX, chunkZ)) {
-                    build.mesh.free();
-                    world.markChunkDirty(chunkX, chunkZ);
-                    return cached;
-                }
-                int vbo = glGenBuffers();
-                try {
-                    glBindBuffer(GL_ARRAY_BUFFER, vbo);
-                    glBufferData(GL_ARRAY_BUFFER, memByteBuffer(build.mesh.address, build.mesh.floats * 4), GL_STATIC_DRAW);
-                    checkGl("chunk upload " + chunkX + "," + chunkZ);
-                    ChunkMesh replacement = new ChunkMesh(vbo, build.mesh.floats / 9);
-                    ChunkMesh previous = meshes.put(key, replacement);
-                    if (previous != null) glDeleteBuffers(previous.vbo);
-                    invalidatedMeshes.remove(key);
-                    return replacement;
-                } finally {
-                    build.mesh.free();
-                }
-            } catch (CancellationException e) {
-                return cached;
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                return cached;
-            } catch (ExecutionException e) {
-                log("Chunk mesh failed at " + chunkX + "," + chunkZ, e.getCause());
-                return cached;
-            }
-        }
+        BuildWorker pending = pendingMeshes.get(key);
         if (cached != null && !invalidatedMeshes.contains(key)) return cached;
         if (pending == null) {
+            BuildWorker worker = freeWorker();
+            if (worker == null) return cached;
             long revision = world.chunkRevision(chunkX, chunkZ);
-            pending = meshExecutor.submit(() -> buildChunk(chunkX, chunkZ, revision));
-            pendingMeshes.put(key, pending);
+            worker.assign(key, chunkX, chunkZ, revision);
+            pendingMeshes.put(key, worker);
             return cached;
         }
         return cached;
+    }
+
+    private BuildWorker freeWorker() {
+        for (BuildWorker worker : buildWorkers) {
+            if (worker.future == null) return worker;
+        }
+        return null;
+    }
+
+    private void completeFinishedWorkers() {
+        for (BuildWorker worker : buildWorkers) {
+            if (worker.future == null || !worker.future.isDone()) continue;
+            long key = worker.key;
+            pendingMeshes.remove(key);
+            try {
+                ChunkBuild build = worker.future.get();
+                if (build.revision != world.chunkRevision(worker.chunkX, worker.chunkZ)) {
+                    build.mesh.free();
+                    world.markChunkDirty(worker.chunkX, worker.chunkZ);
+                } else {
+                    int vbo = glGenBuffers();
+                    try {
+                        glBindBuffer(GL_ARRAY_BUFFER, vbo);
+                        glBufferData(GL_ARRAY_BUFFER,
+                                memByteBuffer(build.mesh.address, build.mesh.floats * 4), GL_STATIC_DRAW);
+                        checkGl("chunk upload " + worker.chunkX + "," + worker.chunkZ);
+                        ChunkMesh replacement = new ChunkMesh(vbo, build.mesh.floats / 9);
+                        ChunkMesh previous = meshes.put(key, replacement);
+                        if (previous != null) glDeleteBuffers(previous.vbo);
+                        invalidatedMeshes.remove(key);
+                    } finally {
+                        build.mesh.free();
+                    }
+                }
+            } catch (CancellationException e) {
+                // Shutdown cancellation is expected.
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            } catch (ExecutionException e) {
+                log("Chunk mesh failed at " + worker.chunkX + "," + worker.chunkZ, e.getCause());
+                invalidatedMeshes.add(key);
+            } finally {
+                worker.reset();
+            }
+        }
     }
 
     private ChunkBuild buildChunk(int chunkX, int chunkZ, long revision) {
@@ -536,6 +598,25 @@ final class Game {
         private ChunkBuild(long revision, NativeMesh mesh) {
             this.revision = revision;
             this.mesh = mesh;
+        }
+
+    }
+
+    private final class BuildWorker {
+        private Future<ChunkBuild> future;
+        private long key;
+        private int chunkX;
+        private int chunkZ;
+
+        private void assign(long key, int chunkX, int chunkZ, long revision) {
+            this.key = key;
+            this.chunkX = chunkX;
+            this.chunkZ = chunkZ;
+            future = meshExecutor.submit(() -> buildChunk(chunkX, chunkZ, revision));
+        }
+
+        private void reset() {
+            future = null;
         }
     }
 
