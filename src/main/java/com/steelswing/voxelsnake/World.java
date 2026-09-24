@@ -2,6 +2,7 @@ package com.steelswing.voxelsnake;
 
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.ArrayDeque;
 import java.util.Map;
 import java.util.Set;
 
@@ -14,10 +15,11 @@ final class World {
     static final int CHUNK_SIZE = 32;
     static final int CHUNK_COUNT = 32;
     static final int SIZE = CHUNK_SIZE * CHUNK_COUNT;
-    static final int HEIGHT = SIZE;
+    static final int HEIGHT = 128;
 
     private final long seed;
     private final Map<Long, Chunk> chunks = new HashMap<>();
+    private final Map<Long, byte[]> lightMaps = new HashMap<>();
     private final Set<Long> dirtyChunks = new HashSet<>();
     private long revision;
 
@@ -43,6 +45,7 @@ final class World {
         if (memGetByte(address) != type) {
             memPutByte(address, type);
             revision++;
+            lightMaps.clear();
             markDirty(x, y, z);
             return true;
         }
@@ -95,15 +98,29 @@ final class World {
     private void decorate(Chunk chunk, int chunkX, int chunkY, int chunkZ, int localX, int localZ,
                           int x, int z, int surface) {
         long hash = x * 341873128712L ^ z * 132897987541L ^ seed;
-        if (Math.floorMod(hash, 37) == 0) {
+        if (isTreeBase(x, z)) {
             for (int y = surface + 1; y <= surface + 4; y++) putIfLocal(chunk, chunkX, chunkY, chunkZ, x, y, z, (byte) 4);
             for (int ox = -2; ox <= 2; ox++) for (int oy = 3; oy <= 5; oy++) for (int oz = -2; oz <= 2; oz++) {
-                if (Math.abs(ox) + Math.abs(oz) + Math.max(0, oy - 4) <= 3)
+                if (Math.abs(ox) + Math.abs(oz) + Math.max(0, oy - 4) <= 3
+                        && (Math.abs(ox) + Math.abs(oz) < 3 || oy == 5))
                     putIfLocal(chunk, chunkX, chunkY, chunkZ, x + ox, surface + oy, z + oz, (byte) 5);
             }
-        } else if (Math.floorMod(hash, 29) == 0) {
+        } else if (Math.floorMod(hash, 29) == 0 && !isTreeBase(x, z)) {
             putIfLocal(chunk, chunkX, chunkY, chunkZ, x, surface + 1, z, (byte) 5);
         }
+    }
+
+    private boolean isTreeBase(int x, int z) {
+        long own = x * 341873128712L ^ z * 132897987541L ^ seed;
+        if (Math.floorMod(own, 37) != 0) return false;
+        for (int ox = -4; ox <= 4; ox++) {
+            for (int oz = -4; oz <= 4; oz++) {
+                if (ox == 0 && oz == 0) continue;
+                long other = (x + ox) * 341873128712L ^ (z + oz) * 132897987541L ^ seed;
+                if (Math.floorMod(other, 37) == 0 && other < own) return false;
+            }
+        }
+        return true;
     }
 
     private void putIfLocal(Chunk chunk, int chunkX, int chunkY, int chunkZ, int x, int y, int z, byte type) {
@@ -116,6 +133,7 @@ final class World {
     synchronized void close() {
         for (Chunk chunk : chunks.values()) nmemFree(chunk.address);
         chunks.clear();
+        lightMaps.clear();
     }
 
     synchronized long revision() {
@@ -127,6 +145,71 @@ final class World {
         dirtyChunks.clear();
         return result;
     }
+
+    synchronized float light(int x, int y, int z) {
+        if (y < 0 || y >= HEIGHT) return .35f;
+        int chunkX = Math.floorDiv(Math.floorMod(x, SIZE), CHUNK_SIZE);
+        int chunkZ = Math.floorDiv(Math.floorMod(z, SIZE), CHUNK_SIZE);
+        long key = renderChunkKey(chunkX, chunkZ);
+        byte[] map = lightMaps.computeIfAbsent(key, ignored -> buildLightMap(chunkX, chunkZ));
+        int localX = Math.floorMod(x, CHUNK_SIZE);
+        int localZ = Math.floorMod(z, CHUNK_SIZE);
+        int level = map[localX | (y << 5) | (localZ << 12)] & 0xFF;
+        return .35f + level / 15f * .65f;
+    }
+
+    private byte[] buildLightMap(int chunkX, int chunkZ) {
+        int volume = CHUNK_SIZE * HEIGHT * CHUNK_SIZE;
+        byte[] map = new byte[volume];
+        ArrayDeque<Integer> queue = new ArrayDeque<>();
+        int startX = chunkX * CHUNK_SIZE;
+        int startZ = chunkZ * CHUNK_SIZE;
+        for (int localX = 0; localX < CHUNK_SIZE; localX++) {
+            for (int localZ = 0; localZ < CHUNK_SIZE; localZ++) {
+                int index = localX | ((HEIGHT - 1) << 5) | (localZ << 12);
+                map[index] = 15;
+                queue.add(index);
+            }
+        }
+        for (int x = startX; x < startX + CHUNK_SIZE; x++) {
+            for (int y = 0; y < HEIGHT; y++) {
+                for (int z = startZ; z < startZ + CHUNK_SIZE; z++) {
+                    if (get(x, y, z) == 6) {
+                        int index = (x - startX) | (y << 5) | ((z - startZ) << 12);
+                        if ((map[index] & 0xFF) < 14) {
+                            map[index] = 14;
+                            queue.add(index);
+                        }
+                    }
+                }
+            }
+        }
+        while (!queue.isEmpty()) {
+            int index = queue.removeFirst();
+            int level = map[index] & 0xFF;
+            if (level <= 1) continue;
+            int localX = index & 31;
+            int y = (index >>> 5) & 127;
+            int localZ = (index >>> 12) & 31;
+            for (int[] direction : LIGHT_DIRECTIONS) {
+                int nx = localX + direction[0];
+                int ny = y + direction[1];
+                int nz = localZ + direction[2];
+                if (nx < 0 || nx >= 32 || ny < 0 || ny >= HEIGHT || nz < 0 || nz >= 32) continue;
+                if (get(startX + nx, ny, startZ + nz) != 0) continue;
+                int next = nx | (ny << 5) | (nz << 12);
+                if ((map[next] & 0xFF) < level - 1) {
+                    map[next] = (byte) (level - 1);
+                    queue.addLast(next);
+                }
+            }
+        }
+        return map;
+    }
+
+    private static final int[][] LIGHT_DIRECTIONS = {
+            {1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}
+    };
 
     private void markDirty(int x, int y, int z) {
         int chunkX = Math.floorDiv(x, CHUNK_SIZE);

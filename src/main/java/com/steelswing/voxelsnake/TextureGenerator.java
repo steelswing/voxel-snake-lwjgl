@@ -17,7 +17,7 @@ final class TextureGenerator {
 
     private static final int[] BASE = {
             0x6AAA40, 0x966C4A, 0x7F7F7F, 0x675231,
-            0x50D937, 0x35B84A, 0xE63224, 0xB53A15
+            0x50D937, 0x35B84A, 0xE63224, 0xB53A15, 0xF2A33A
     };
 
     private static final long LCG_MULTIPLIER = 1664525L;
@@ -48,10 +48,11 @@ final class TextureGenerator {
                     state = (state * LCG_MULTIPLIER + LCG_INCREMENT) & LCG_MASK;
                     int random = (int) ((state >>> 16) % 96);
                     int rgb = color(material, section, x, localY, random);
+                    int alpha = material == 5 && ((x * 13 + localY * 7 + random) & 7) < 2 ? 0x20 : 0xFF;
                     memPutByte(at++, (byte) (rgb >> 16));
                     memPutByte(at++, (byte) (rgb >> 8));
                     memPutByte(at++, (byte) rgb);
-                    memPutByte(at++, (byte) 0xFF);
+                    memPutByte(at++, (byte) alpha);
                 }
             }
         }
@@ -104,6 +105,12 @@ final class TextureGenerator {
             case 7:
                 rgb = shade(0xB53A15, 190 + random / 2);
                 if ((x + y) % 5 == 0) rgb = shade(0xF2C4A0, brightness);
+                break;
+            case 8:
+                rgb = shade(0xF2A33A, 200 + random / 3);
+                if (((x - 7) * (x - 7) + (y - 7) * (y - 7)) < 20) {
+                    rgb = shade(0xFFF0A0, 230 + random / 4);
+                }
                 break;
             default:
                 break;
