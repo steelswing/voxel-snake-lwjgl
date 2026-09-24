@@ -1,7 +1,9 @@
 package com.steelswing.voxelsnake;
 
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
 
 import static org.lwjgl.system.MemoryUtil.memGetByte;
 import static org.lwjgl.system.MemoryUtil.memPutByte;
@@ -16,7 +18,7 @@ final class World {
 
     private final long seed;
     private final Map<Long, Chunk> chunks = new HashMap<>();
-    private long version;
+    private final Set<Long> dirtyChunks = new HashSet<>();
 
     World(long seed) {
         this.seed = seed;
@@ -31,30 +33,31 @@ final class World {
         return memGetByte(chunk.address + index(x, y, z));
     }
 
-    void set(int x, int y, int z, byte type) {
-        if (y < 0 || y >= HEIGHT) return;
+    boolean set(int x, int y, int z, byte type) {
+        if (y < 0 || y >= HEIGHT) return false;
         x = Math.floorMod(x, SIZE);
         z = Math.floorMod(z, SIZE);
         Chunk chunk = chunk(Math.floorDiv(x, CHUNK_SIZE), Math.floorDiv(y, CHUNK_SIZE), Math.floorDiv(z, CHUNK_SIZE));
         long address = chunk.address + index(x, y, z);
         if (memGetByte(address) != type) {
             memPutByte(address, type);
-            version++;
+            markDirty(x, y, z);
+            return true;
         }
+        return false;
     }
 
     int surface(int x, int z) {
         x = Math.floorMod(x, SIZE);
         z = Math.floorMod(z, SIZE);
-        for (int y = HEIGHT - 1; y >= 0; y--) if (get(x, y, z) != 0) return y;
-        return 0;
+        return surfaceHeight(x, z);
     }
 
     private Chunk chunk(int chunkX, int chunkY, int chunkZ) {
         chunkX = Math.floorMod(chunkX, CHUNK_COUNT);
         chunkY = Math.floorMod(chunkY, CHUNK_COUNT);
         chunkZ = Math.floorMod(chunkZ, CHUNK_COUNT);
-        long key = ((long) chunkX << 42) | ((long) chunkY << 21) | chunkZ;
+        long key = chunkKey(chunkX, chunkY, chunkZ);
         int finalChunkX = chunkX;
         int finalChunkY = chunkY;
         int finalChunkZ = chunkZ;
@@ -113,8 +116,35 @@ final class World {
         chunks.clear();
     }
 
-    long version() {
-        return version;
+    Set<Long> consumeDirtyChunks() {
+        Set<Long> result = new HashSet<>(dirtyChunks);
+        dirtyChunks.clear();
+        return result;
+    }
+
+    private void markDirty(int x, int y, int z) {
+        int chunkX = Math.floorDiv(x, CHUNK_SIZE);
+        int chunkY = Math.floorDiv(y, CHUNK_SIZE);
+        int chunkZ = Math.floorDiv(z, CHUNK_SIZE);
+        for (int ox = -1; ox <= 1; ox++) {
+            for (int oy = -1; oy <= 1; oy++) {
+                for (int oz = -1; oz <= 1; oz++) {
+                    if (Math.abs(ox) + Math.abs(oy) + Math.abs(oz) <= 1) {
+                        dirtyChunks.add(renderChunkKey(chunkX + ox, chunkZ + oz));
+                    }
+                }
+            }
+        }
+    }
+
+    static long chunkKey(int x, int y, int z) {
+        return ((long) Math.floorMod(x, CHUNK_COUNT) << 42)
+                | ((long) Math.floorMod(y, CHUNK_COUNT) << 21)
+                | Math.floorMod(z, CHUNK_COUNT);
+    }
+
+    static long renderChunkKey(int x, int z) {
+        return ((long) x << 32) ^ (z & 0xffffffffL);
     }
 
     private static int index(int x, int y, int z) {

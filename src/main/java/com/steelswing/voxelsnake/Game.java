@@ -15,17 +15,14 @@ import static org.lwjgl.opengl.GL12C.*;
 import static org.lwjgl.opengl.GL20C.*;
 import static org.lwjgl.opengl.GL15C.nglBufferData;
 import static org.lwjgl.system.MemoryUtil.NULL;
-import static org.lwjgl.system.MemoryUtil.memPutFloat;
-import static org.lwjgl.system.MemoryUtil.nmemAlloc;
 import static org.lwjgl.system.MemoryUtil.nmemFree;
-import static org.lwjgl.system.MemoryUtil.nmemRealloc;
 
 final class Game {
     private long window;
     private int program;
     private int texture;
     private int entityVbo;
-    private int outlineVbo;
+    private SelectionRenderer selectionRenderer;
     private final World world = new World(0x5EEDL);
     private final List<int[]> snake = new ArrayList<>();
     private final Random random = new Random(0xA11CE);
@@ -53,7 +50,6 @@ final class Game {
     private boolean firstMouse = true;
     private int selectedBlock = 2;
     private final Map<Long, ChunkMesh> meshes = new HashMap<>();
-    private long meshVersion = -1;
 
     void run() {
         init();
@@ -63,6 +59,7 @@ final class Game {
             for (ChunkMesh mesh : meshes.values()) glDeleteBuffers(mesh.vbo);
             meshes.clear();
             world.close();
+            selectionRenderer.free();
             if (window != NULL) glfwDestroyWindow(window);
             glfwTerminate();
         }
@@ -85,7 +82,7 @@ final class Game {
         program = createProgram();
         texture = createTexture();
         entityVbo = glGenBuffers();
-        outlineVbo = glGenBuffers();
+        selectionRenderer = new SelectionRenderer();
         addSnake(16, 16);
         addSnake(15, 16);
         addSnake(14, 16);
@@ -285,12 +282,9 @@ final class Game {
             ty = followTargetY;
             tz = followTargetZ;
         }
-        if (meshVersion != world.version()) {
-            for (ChunkMesh mesh : meshes.values()) glDeleteBuffers(mesh.vbo);
-            meshes.clear();
-            glDeleteBuffers(entityVbo);
-            glDeleteBuffers(outlineVbo);
-            meshVersion = world.version();
+        for (long dirtyKey : world.consumeDirtyChunks()) {
+            ChunkMesh dirtyMesh = meshes.remove(dirtyKey);
+            if (dirtyMesh != null) glDeleteBuffers(dirtyMesh.vbo);
         }
         glUseProgram(program);
         glUniform1f(glGetUniformLocation(program, "useTexture"), 1f);
@@ -328,13 +322,13 @@ final class Game {
         glDrawArrays(GL_TRIANGLES, 0, entities.floats / 6);
         entities.free();
         int[] hit = editMode ? raycast() : null;
-        if (hit != null) drawSelection(hit, position, texCoord, light);
+        if (hit != null) selectionRenderer.render(program, hit);
     }
 
     private ChunkMesh chunkMesh(int chunkX, int chunkZ) {
         int wrappedX = Math.floorMod(chunkX, World.CHUNK_COUNT);
         int wrappedZ = Math.floorMod(chunkZ, World.CHUNK_COUNT);
-        long key = ((long) chunkX << 32) ^ (chunkZ & 0xffffffffL);
+        long key = World.renderChunkKey(chunkX, chunkZ);
         ChunkMesh cached = meshes.get(key);
         if (cached != null) return cached;
         NativeMesh data = new NativeMesh(262144);
@@ -364,55 +358,6 @@ final class Game {
         private ChunkMesh(int vbo, int vertices) {
             this.vbo = vbo;
             this.vertices = vertices;
-        }
-    }
-
-    private void drawSelection(int[] hit, int position, int texCoord, int light) {
-        NativeMesh outline = new NativeMesh(72);
-        float x = hit[0], y = hit[1], z = hit[2], e = .002f;
-        float[][] p = {{x-e,y-e,z-e},{x+1+e,y-e,z-e},{x+1+e,y+1+e,z-e},{x-e,y+1+e,z-e},
-                {x-e,y-e,z+1+e},{x+1+e,y-e,z+1+e},{x+1+e,y+1+e,z+1+e},{x-e,y+1+e,z+1+e}};
-        int[][] lines = {{0,1},{1,2},{2,3},{3,0},{4,5},{5,6},{6,7},{7,4},{0,4},{1,5},{2,6},{3,7}};
-        for (int[] line : lines) for (int vertex : line) outline.put(p[vertex][0], p[vertex][1], p[vertex][2], 0, 0, 1);
-        glBindBuffer(GL_ARRAY_BUFFER, outlineVbo);
-        nglBufferData(GL_ARRAY_BUFFER, outline.floats * 4L, outline.address, GL_STREAM_DRAW);
-        glDisable(GL_CULL_FACE);
-        glLineWidth(2f);
-        glUniform1f(glGetUniformLocation(program, "useTexture"), 0f);
-        glUniform4f(glGetUniformLocation(program, "tint"), 1f, .85f, .1f, 1f);
-        glDrawArrays(GL_LINES, 0, outline.floats / 6);
-        glUniform1f(glGetUniformLocation(program, "useTexture"), 1f);
-        glEnable(GL_CULL_FACE);
-        outline.free();
-    }
-
-    private static final class NativeMesh {
-        private long address;
-        private int capacity;
-        private int floats;
-
-        private NativeMesh(int initialFloats) {
-            capacity = Math.max(64, initialFloats);
-            address = nmemAlloc(capacity * 4L);
-        }
-
-        private void put(float x, float y, float z, float u, float v, float light) {
-            ensure(6);
-            long at = address + floats * 4L;
-            memPutFloat(at, x); memPutFloat(at + 4, y); memPutFloat(at + 8, z);
-            memPutFloat(at + 12, u); memPutFloat(at + 16, v); memPutFloat(at + 20, light);
-            floats += 6;
-        }
-
-        private void ensure(int count) {
-            if (floats + count <= capacity) return;
-            while (floats + count > capacity) capacity *= 2;
-            address = nmemRealloc(address, capacity * 4L);
-        }
-
-        private void free() {
-            nmemFree(address);
-            address = 0;
         }
     }
 
